@@ -31,7 +31,11 @@ class NativeToolContractTest {
         assertTrue("no native tools found to check", declared.isNotEmpty())
 
         val unknown = declared.filterNot { (_, risk) -> risk in known }
-        assertEquals("these risk names do not exist in harness_core.tools.Risk", emptyList(), unknown)
+        assertEquals(
+            "these risk names do not exist in harness_core.tools.Risk",
+            emptyList<Pair<String, String>>(),
+            unknown,
+        )
     }
 
     @Test
@@ -43,7 +47,11 @@ class NativeToolContractTest {
                 DESCRIPTION.find(file.readText())?.groupValues?.get(1)?.let { file.name to it }
             }
             .filter { (_, text) -> text.length < 30 }
-        assertEquals("these descriptions are too short to guide a model", emptyList(), vague)
+        assertEquals(
+            "these descriptions are too short to guide a model",
+            emptyList<Pair<String, String>>(),
+            vague,
+        )
     }
 
     private fun risksDeclaredInPython(): Set<String> {
