@@ -1,0 +1,10 @@
+.gradle/
+build/
+local.properties
+gradle/
+gradlew
+gradlew.bat
+.idea/
+*.iml
+__pycache__/
+.venv/
