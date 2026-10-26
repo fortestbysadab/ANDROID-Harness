@@ -480,6 +480,58 @@ refuse these APIs off the main looper.
       `ClipboardTools.kt`
 - [ ] Confirmed on the owner's device
 
+**3b — the ones that can say no.**
+
+Three permissions, three different mechanisms, which is the real lesson
+of this batch: "ask for permission" is not one thing.
+
+**Location and contacts** are runtime permissions, and the awkward part
+is not the dialog but *where it is asked from*. A tool runs on a worker
+thread with no activity, and since Android 10 an app with no window on
+screen cannot start one. So there are three outcomes, not two, and
+collapsing them is how an agent ends up saying "you have no contacts"
+when it never actually asked: **granted**, **refused**, and **cannot
+ask — nobody is looking**. The third is what a scheduled run gets, and
+it is reported as such. `PermissionRequestActivity` is a window with no
+interface whose only job is to exist so the system has something to
+show a dialog to.
+
+**Notification access is not a runtime permission at all.** There is no
+dialog, only a page in Settings, and Android gives an app no way to
+request it. So the tool detects that it is off and says exactly where
+to go — rather than returning an empty list, which is the same
+confident lie the clipboard read was written to avoid.
+
+Permissions are asked for at the moment a tool first needs one, never
+at launch. A prompt with no question attached is one the owner has no
+basis to answer.
+
+**Notifications are held in memory only.** They are other people's
+words arriving continuously; writing them to disk would build a record
+of the owner's private life that nobody asked for and that outlives its
+reason. If the process dies, the history goes with it. That is correct,
+and the tool says so when the list is empty.
+
+**Saying yes, finally.** This is the first batch where a tool can
+genuinely pause a run — a `sensitive_read` after the run has been
+tainted needs approval — so it is the first time the owner needs
+somewhere to answer. That exposed a real gap: the approval store keeps
+only a *hash* of the action, deliberately, so nothing remembered what
+had actually been proposed and a "yes" had nothing to execute. The
+runtime now hands back the proposed arguments with the pause, the agent
+holds them in memory, and `approve()` runs that one exact action. In
+memory on purpose: an approval that outlived a restart would be a
+decision the owner made about a situation that no longer exists, and it
+is not offered after one.
+
+- [x] `get_location`, `find_contact`, `get_notifications`
+- [x] `Permissions` with three outcomes, and a windowless activity to ask from
+- [x] `HarnessApplication` — knows whether anyone is looking, and warms
+      the interpreter at launch so the first question stops paying 550 ms
+- [x] An approval can be answered on the device, bound to the exact action
+- [x] 32 JVM tests on the pure parts; 155 core tests; 6 mutants, 6 killed
+- [ ] Confirmed on the owner's device
+
 Ordered easiest first so the harness is proven before the awkward ones.
 
 Exit: parity with the predecessor's Termux:API tools.

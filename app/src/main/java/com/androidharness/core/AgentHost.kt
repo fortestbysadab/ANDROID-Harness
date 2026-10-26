@@ -3,7 +3,10 @@ package com.androidharness.core
 import android.content.Context
 import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.tools.BatteryTool
+import com.androidharness.tools.ContactsTool
 import com.androidharness.tools.GetClipboardTool
+import com.androidharness.tools.LocationTool
+import com.androidharness.tools.NotificationsTool
 import com.androidharness.tools.NativeTool
 import com.androidharness.tools.SandboxTool
 import com.androidharness.tools.SetClipboardTool
@@ -59,6 +62,9 @@ object AgentHost {
             SetClipboardTool(application),
             VibrateTool(application),
             SpeakTool(application),
+            LocationTool(application),
+            ContactsTool(application),
+            NotificationsTool(application),
             SandboxTool(TermuxSandbox(application)),
         )
         tools.forEach { tool ->
@@ -104,6 +110,14 @@ object AgentHost {
         val built = instance(context)
         return built.callAttr("ask", text, conversationId).toString()
     }
+
+    /** What is waiting on the owner, as JSON for the screen to render. */
+    fun pendingApprovals(context: Context): String =
+        instance(context).callAttr("pending_approvals").toString()
+
+    /** Say yes to one exact action. */
+    fun approve(context: Context, approvalId: String): String =
+        instance(context).callAttr("approve", approvalId).toString()
 
     fun reset(context: Context, conversationId: String = "device"): Boolean =
         instance(context).callAttr("reset", conversationId).toBoolean()

@@ -18,6 +18,13 @@
          installing the app. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Batch 3b. Each of these is asked for at the moment a tool first
+         needs it, never at launch: a prompt with no question attached to
+         it is one the owner has no basis to answer. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
     <queries>
         <package android:name="com.termux" />
     </queries>
@@ -33,6 +40,7 @@
         android:maxSdkVersion="32" />
 
     <application
+        android:name=".HarnessApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -48,6 +56,27 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- A window with no interface. Android will only show a
+             permission dialog to an activity, and a tool has none. -->
+        <activity
+            android:name=".permissions.PermissionRequestActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Notification access is granted in Settings, not by a prompt.
+             The system binds this only after the owner turns it on. -->
+        <service
+            android:name=".notifications.HarnessNotificationListener"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!-- Termux fires this with the command result. Not exported: only
              the PendingIntent we created can trigger it. -->

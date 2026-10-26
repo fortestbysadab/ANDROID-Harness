@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from typing import Any
 
 from harness_core.approvals import ApprovalStore
@@ -57,6 +58,12 @@ class Agent:
         )
         self._runtime: AgentRuntime | None = None
         self._unattended: AgentRuntime | None = None
+        #: What each pending approval would actually do. The store keeps
+        #: only a hash, so without this the owner's "yes" would have
+        #: nothing to run. In memory on purpose: an approval that
+        #: outlived a restart would be a decision the owner made about a
+        #: situation that no longer exists.
+        self._awaiting: dict[str, tuple[str, Mapping[str, Any]]] = {}
 
     # -- configuration -------------------------------------------------
 
@@ -124,6 +131,9 @@ class Agent:
         # tool was denied would be its own bug.
         self.sessions.save(conversation_id, outcome.messages)
 
+        for approval_id, arguments in outcome.pending_arguments.items():
+            self._awaiting[approval_id] = (conversation_id, dict(arguments))
+
         return json.dumps(
             {
                 "status": outcome.status.value,
@@ -146,6 +156,81 @@ class Agent:
             },
             default=str,
         )
+
+    def approve(self, approval_id: str) -> str:
+        """Run the one action the owner just said yes to.
+
+        The arguments are re-hashed by the store, so this cannot be used
+        to run anything other than what was shown - approving
+        "message Rafi" cannot become "message everyone". The approval is
+        forgotten here either way: a yes is spent once, and a failed
+        attempt must not leave a second chance lying around.
+        """
+        runtime = self._runtime
+        if runtime is None:
+            return json.dumps({"status": "not_configured", "text": "No model is configured."})
+
+        remembered = self._awaiting.pop(approval_id, None)
+        if remembered is None:
+            return json.dumps(
+                {
+                    "status": "unknown",
+                    "text": (
+                        "That approval is no longer waiting. It may have been used "
+                        "already, or the app restarted since it was asked for."
+                    ),
+                }
+            )
+        conversation_id, arguments = remembered
+
+        approval = next(
+            (item for item in self.approvals.pending(OWNER) if item.approval_id == approval_id),
+            None,
+        )
+        if approval is None:
+            return json.dumps(
+                {"status": "expired", "text": "That approval has expired. Ask again."}
+            )
+
+        result = runtime.execute_approved(approval, arguments, actor_id=OWNER)
+
+        # Written back as a note from the owner, labelled as one. The
+        # alternative - replanning the whole turn - would ask the model
+        # to decide again something that has already been decided and
+        # done.
+        history = list(self.sessions.history(conversation_id))
+        history.append(
+            {
+                "role": "user",
+                "content": (
+                    f"(I approved {approval.tool}. It {result.status}: {result.summary})"
+                ),
+            }
+        )
+        self.sessions.save(conversation_id, history)
+
+        return json.dumps(
+            {
+                "status": result.status,
+                "text": result.summary,
+                "tool": approval.tool,
+                "error": result.error_code or "",
+            },
+            default=str,
+        )
+
+    def pending_approvals(self) -> str:
+        """What is waiting on the owner, for a screen to show."""
+        waiting = [
+            {
+                "approval_id": approval.approval_id,
+                "tool": approval.tool,
+                "reason": approval.reason,
+            }
+            for approval in self.approvals.pending(OWNER)
+            if approval.approval_id in self._awaiting
+        ]
+        return json.dumps(waiting)
 
     def reset(self, conversation_id: str = "device") -> bool:
         """Start a new conversation. Old context must not leak into it."""

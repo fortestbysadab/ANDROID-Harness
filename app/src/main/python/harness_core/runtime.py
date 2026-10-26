@@ -71,6 +71,12 @@ class RunOutcome:
     error: str = ""
     tainted: bool = False
     tainted_by: tuple[str, ...] = field(default_factory=tuple)
+    #: The arguments behind each pending approval, keyed by approval id.
+    #: The approval itself stores only a hash - deliberately, so that it
+    #: authorises one exact action and cannot be re-pointed. But that
+    #: means something has to remember what was actually proposed, or
+    #: the owner's "yes" has nothing to execute.
+    pending_arguments: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 class AgentRuntime:
@@ -113,6 +119,7 @@ class AgentRuntime:
 
         results: list[ToolResult] = []
         pending: list[Approval] = []
+        proposed: dict[str, Mapping[str, Any]] = {}
         seen: dict[str, int] = {}
         total_calls = 0
 
@@ -180,6 +187,7 @@ class AgentRuntime:
 
                 if outcome.status == APPROVAL_REQUIRED and outcome.approval is not None:
                     pending.append(outcome.approval)
+                    proposed[outcome.approval.approval_id] = dict(call.arguments)
                     waiting = ToolResult(
                         status="awaiting_approval",
                         summary=outcome.summary,
@@ -214,6 +222,7 @@ class AgentRuntime:
                     messages=tuple(messages),
                     tainted=state.tainted,
                     tainted_by=state.tainted_by,
+                    pending_arguments=proposed,
                 )
 
         return self._exhausted(run_id, results, messages, state, "model turn budget ran out")

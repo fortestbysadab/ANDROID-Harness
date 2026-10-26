@@ -249,3 +249,88 @@ class TestTheSingleton:
     def test_reading_the_audit_before_anything_happened_is_empty(self, tmp_path):
         agent = Agent(str(tmp_path / "agent"))
         assert json.loads(agent.recent_audit()) == []
+
+
+class TestApproving:
+    """The owner's yes, and what it is allowed to do.
+
+    This is the first batch where a tool can actually pause a run, so
+    it is the first time these paths matter. The property worth holding
+    onto: an approval authorises one exact action, and saying yes to it
+    cannot be made to run a different one.
+    """
+
+    def build_pausing(self, tmp_path, planner=None):
+        return build(
+            tmp_path,
+            planner or ScriptedPlanner(battery_call()),
+            risk="external_side_effect",
+        )
+
+    def test_a_pause_remembers_what_was_proposed(self, tmp_path):
+        # The store keeps only a hash, so without this the owner's yes
+        # would have nothing to execute.
+        agent, _ = self.build_pausing(tmp_path)
+        agent.ask("do it")
+        assert len(agent._awaiting) == 1
+
+    def test_what_is_waiting_can_be_listed(self, tmp_path):
+        agent, _ = self.build_pausing(tmp_path)
+        agent.ask("do it")
+        waiting = json.loads(agent.pending_approvals())
+        assert waiting[0]["tool"] == "get_battery_status"
+        assert waiting[0]["reason"]
+
+    def test_approving_runs_the_tool(self, tmp_path):
+        agent, tool = self.build_pausing(tmp_path)
+        approval_id = json.loads(agent.ask("do it"))["pending_approvals"][0]["approval_id"]
+        assert tool.calls == 0
+        reply = json.loads(agent.approve(approval_id))
+        assert reply["status"] == "ok"
+        assert tool.calls == 1
+
+    def test_an_approval_is_spent_once(self, tmp_path):
+        agent, tool = self.build_pausing(tmp_path)
+        approval_id = json.loads(agent.ask("do it"))["pending_approvals"][0]["approval_id"]
+        agent.approve(approval_id)
+        second = json.loads(agent.approve(approval_id))
+        assert second["status"] == "unknown"
+        assert tool.calls == 1
+
+    def test_an_invented_approval_id_does_nothing(self, tmp_path):
+        agent, tool = self.build_pausing(tmp_path)
+        agent.ask("do it")
+        assert json.loads(agent.approve("made-up"))["status"] == "unknown"
+        assert tool.calls == 0
+
+    def test_approving_before_a_model_is_configured_is_refused(self, tmp_path):
+        agent = Agent(str(tmp_path / "agent"))
+        assert json.loads(agent.approve("anything"))["status"] == "not_configured"
+
+    def test_the_approved_action_is_recorded_in_the_conversation(self, tmp_path):
+        agent, _ = self.build_pausing(tmp_path)
+        approval_id = json.loads(agent.ask("do it"))["pending_approvals"][0]["approval_id"]
+        agent.approve(approval_id)
+        history = agent.sessions.history("device")
+        assert any(
+            "I approved get_battery_status" in str(message.get("content"))
+            for message in history
+        )
+
+    def test_a_run_that_needs_nothing_leaves_nothing_waiting(self, tmp_path):
+        agent, _ = build(tmp_path, ScriptedPlanner(PlannerResponse(text="hello")))
+        agent.ask("hi")
+        assert json.loads(agent.pending_approvals()) == []
+
+    def test_an_approval_that_outlived_the_app_is_not_offered(self, tmp_path):
+        # The store is on disk and the proposed arguments are not, so
+        # after a restart a pending row exists that nothing can
+        # execute. Offering the owner a button that cannot work would
+        # be worse than not offering one.
+        agent, _ = self.build_pausing(tmp_path)
+        agent.ask("do it")
+        assert len(json.loads(agent.pending_approvals())) == 1
+
+        restarted = Agent(str(tmp_path / "agent"))
+        assert restarted.approvals.pending("owner"), "the row should still be in the store"
+        assert json.loads(restarted.pending_approvals()) == []

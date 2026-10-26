@@ -32,6 +32,7 @@ import com.androidharness.termux.TermuxStatus
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -219,6 +220,21 @@ class DiagnosticsActivity : AppCompatActivity() {
             },
         )
 
+        root.addView(heading("Notification access"))
+        root.addView(
+            body(
+                "Reading notifications is not a runtime permission, so no tool " +
+                    "can ask for it. It is a page in Settings, and this button " +
+                    "opens it.",
+            ),
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Open notification access settings"
+                setOnClickListener { openNotificationAccess() }
+            },
+        )
+
         root.addView(heading("Ask the agent"))
         root.addView(
             body(
@@ -240,6 +256,12 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "New conversation"
                 setOnClickListener { resetConversation() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Show what needs approval"
+                setOnClickListener { showPendingApprovals() }
             },
         )
 
@@ -605,7 +627,13 @@ class DiagnosticsActivity : AppCompatActivity() {
             val reply = try {
                 AgentHost.ask(this, question)
             } catch (failure: Exception) {
-                """{"status":"failed","text":"${failure.message.orEmpty().take(300)}"}"""
+                // Built rather than interpolated: a message containing a
+                // quote would otherwise produce JSON that cannot be read,
+                // turning a tool failure into an unreadable one.
+                JSONObject()
+                    .put("status", "failed")
+                    .put("text", failure.message.orEmpty().take(300))
+                    .toString()
             }
             runOnUiThread { outputView.text = renderAnswer(reply, configured.getOrDefault(listOf())) }
         }
@@ -652,6 +680,64 @@ class DiagnosticsActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The other half of pausing.
+     *
+     * Until this batch no tool could actually stop for approval, so
+     * there was nothing to answer. A sensitive read after the run has
+     * been tainted can, so the owner needs somewhere to say yes - and
+     * the dialog states the exact action, because that is what the
+     * approval is bound to.
+     */
+    private fun showPendingApprovals() {
+        worker.execute {
+            val waiting = runCatching { JSONArray(AgentHost.pendingApprovals(this)) }
+                .getOrDefault(JSONArray())
+            runOnUiThread {
+                if (waiting.length() == 0) {
+                    outputView.text = "[approvals] nothing is waiting for you."
+                    return@runOnUiThread
+                }
+                val item = waiting.getJSONObject(0)
+                val more = if (waiting.length() > 1) {
+                    "\n\n(${waiting.length() - 1} more after this one.)"
+                } else {
+                    ""
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("Approve ${item.optString("tool")}?")
+                    .setMessage(item.optString("reason") + more)
+                    .setPositiveButton("Approve") { _, _ ->
+                        approve(item.optString("approval_id"))
+                    }
+                    .setNegativeButton("Not now", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun approve(approvalId: String) {
+        outputView.text = "Running the approved action…"
+        worker.execute {
+            val reply = runCatching { AgentHost.approve(this, approvalId) }
+                .getOrElse {
+                    JSONObject()
+                        .put("status", "failed")
+                        .put("text", it.message.orEmpty())
+                        .toString()
+                }
+            val parsed = runCatching { JSONObject(reply) }.getOrNull()
+            runOnUiThread {
+                outputView.text = if (parsed == null) {
+                    "[approvals] unreadable reply:\n$reply"
+                } else {
+                    "[approvals] " + parsed.optString("status") + "\n\n" +
+                        parsed.optString("text")
+                }
+            }
+        }
+    }
+
     private fun resetConversation() {
         worker.execute {
             val had = runCatching { AgentHost.reset(this) }.getOrDefault(false)
@@ -662,6 +748,15 @@ class DiagnosticsActivity : AppCompatActivity() {
                     "[agent] there was no conversation to clear."
                 }
             }
+        }
+    }
+
+    private fun openNotificationAccess() {
+        val intent = Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+        runCatching { startActivity(intent) }.onFailure {
+            outputView.text =
+                "[notifications] this device has no notification-access page at the " +
+                    "usual address. Look under Settings > Apps > Special app access."
         }
     }
 
