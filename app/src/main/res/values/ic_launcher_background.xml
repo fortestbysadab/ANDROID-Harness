@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches the artwork's own background, so the seam between the
+         foreground circle and the layer behind it does not show when a
+         launcher masks the icon to a square or a squircle. -->
+    <color name="ic_launcher_background">#FFFFFFFF</color>
+</resources>

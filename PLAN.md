@@ -153,10 +153,11 @@ cannot forge it. A run that produces nothing leaves no directory behind.
 - [x] All-files access requested honestly, with a button and a status line
 - [x] Unit tests, including the forgery attempts
 - [x] Wrapper exercised end to end on Linux against a stand-in `proot`
-- [ ] Confirmed on the owner's device
+- [x] Confirmed on the owner's device — 2026-10-26, realme RMP2402:
+      `file: report.txt (62 bytes)` with the contents read back intact
 
 Exit: a Python script writes a file in the sandbox and the app reads it
-back. Needs **all-files access** granted to this app, and
+back. **Met.** Needs **all-files access** granted to this app, and
 **`termux-setup-storage`** run once in Termux — without it the wrapper
 reports `__HARNESS_NO_STORAGE__` and the app says so.
 

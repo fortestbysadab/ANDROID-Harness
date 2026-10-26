@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon: the launcher supplies the silhouette, so the artwork
+     must not assume one. The background is flat, and the foreground is
+     inset well inside the 108dp canvas because only the middle 66dp is
+     guaranteed not to be cropped. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
