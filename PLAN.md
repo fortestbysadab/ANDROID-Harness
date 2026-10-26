@@ -529,8 +529,41 @@ is not offered after one.
 - [x] `HarnessApplication` — knows whether anyone is looking, and warms
       the interpreter at launch so the first question stops paying 550 ms
 - [x] An approval can be answered on the device, bound to the exact action
-- [x] 32 JVM tests on the pure parts; 155 core tests; 6 mutants, 6 killed
+- [x] 32 JVM tests on the pure parts; 6 mutants, 6 killed
+- [x] **Taint made to outlive the turn** — found on the device, see below
 - [ ] Confirmed on the owner's device
+
+**The bug the owner found, and what it was really about.**
+
+Reading notifications tainted the run, as designed. Then the next
+question came back clean, and a location read straight afterwards went
+through without stopping. The owner reported it as "nothing appeared in
+the approval section", which was exactly right.
+
+The reasoning was wrong in a specific and instructive way. Taint was
+treated as a property of a **turn** — it lived in `RunState`, which is
+built fresh for every question. But the text that causes taint lives in
+the **conversation**: the notification is in the history, and the
+history is replayed to the model on every later turn. So a planted
+instruction did not need to defeat the protection. It only had to wait
+one turn.
+
+Taint is now stored beside the history, because it describes the
+history:
+
+- it accumulates and is never cleared by a later quiet turn — the
+  untrusted text is still there
+- it is carried into each run and into the policy's decision
+- it dies when the history dies: a new conversation, or an expired
+  session, starts clean, because the reason for the suspicion is gone
+- unreadable taint counts as tainted; unknown must mean suspicious
+
+Fixing it also turned up a latent bug next door: `now or time.time()`
+treats a timestamp of zero as "not supplied". Only a test can reach it
+today, but a conditional that is wrong for one input is wrong.
+
+- [x] 9 tests for the conversation-wide behaviour, 10 for the store,
+      and 8 mutants, 8 killed
 
 Ordered easiest first so the harness is proven before the awkward ones.
 

@@ -119,17 +119,21 @@ class Agent:
                 }
             )
 
-        prior = self.sessions.history(conversation_id)
+        session = self.sessions.active(conversation_id)
+        prior = list(session.messages) if session else []
         outcome = runtime.run(
             text,
             actor_id=OWNER,
             conversation_id=conversation_id,
             prior_messages=prior,
+            tainted_by=session.tainted_by if session else (),
         )
         # Saved even when the run paused or failed: the conversation is
         # what the owner sees, and losing their last question because a
         # tool was denied would be its own bug.
-        self.sessions.save(conversation_id, outcome.messages)
+        self.sessions.save(
+            conversation_id, outcome.messages, tainted_by=outcome.tainted_by
+        )
 
         for approval_id, arguments in outcome.pending_arguments.items():
             self._awaiting[approval_id] = (conversation_id, dict(arguments))

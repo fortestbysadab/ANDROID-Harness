@@ -42,6 +42,18 @@ DEFAULT_MAX_MESSAGES = 60
 DEFAULT_MAX_BYTES = 120_000
 
 
+def _moment(now: float | None) -> float:
+    """The supplied time, or the real one.
+
+    Written out rather than `now or time.time()`, which quietly treats a
+    timestamp of zero as "not supplied". That is only reachable from a
+    test today, but a conditional that is wrong for one input is wrong,
+    and the version that reads slightly longer is the one that cannot
+    surprise anybody.
+    """
+    return time.time() if now is None else now
+
+
 @dataclass(frozen=True)
 class Session:
     session_id: str
@@ -50,12 +62,21 @@ class Session:
     last_active_at: float
     messages: tuple[Mapping[str, Any], ...]
     turns: int
+    #: Tools whose untrusted output is sitting in this history. Taint is a
+    #: property of the *conversation*, not of one turn: the email that tried
+    #: to issue instructions is replayed to the model on every later turn,
+    #: so the suspicion has to last exactly as long as the text does.
+    tainted_by: tuple[str, ...] = ()
+
+    @property
+    def tainted(self) -> bool:
+        return bool(self.tainted_by)
 
     def age_seconds(self, now: float | None = None) -> float:
-        return (now or time.time()) - self.created_at
+        return _moment(now) - self.created_at
 
     def idle_seconds(self, now: float | None = None) -> float:
-        return (now or time.time()) - self.last_active_at
+        return _moment(now) - self.last_active_at
 
     def expires_in(self, ttl_seconds: float, now: float | None = None) -> float:
         return max(0.0, ttl_seconds - self.idle_seconds(now))
@@ -174,26 +195,37 @@ class SqliteSessionStore:
                 created_at     REAL    NOT NULL,
                 last_active_at REAL    NOT NULL,
                 turns          INTEGER NOT NULL DEFAULT 0,
-                messages       TEXT    NOT NULL
+                messages       TEXT    NOT NULL,
+                tainted_by     TEXT    NOT NULL DEFAULT '[]'
             )
             """
         )
+        # An install from before taint was persisted has the old table.
+        # Adding the column is cheaper and far less alarming than
+        # dropping the owner's conversations to make room for it.
+        columns = {
+            row[1] for row in self._connection.execute("PRAGMA table_info(sessions)")
+        }
+        if "tainted_by" not in columns:
+            self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN tainted_by TEXT NOT NULL DEFAULT '[]'"
+            )
         self._connection.commit()
 
     # -- reads --------------------------------------------------------
 
     def active(self, conversation_id: str, now: float | None = None) -> Session | None:
         """Return the live session for a chat, expiring a stale one first."""
-        moment = now or time.time()
+        moment = _moment(now)
         with self._lock:
             row = self._connection.execute(
-                "SELECT session_id, created_at, last_active_at, turns, messages "
+                "SELECT session_id, created_at, last_active_at, turns, messages, tainted_by "
                 "FROM sessions WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone()
             if row is None:
                 return None
-            session_id, created_at, last_active_at, turns, payload = row
+            session_id, created_at, last_active_at, turns, payload, taint = row
             if moment - last_active_at >= self.ttl_seconds:
                 self._connection.execute(
                     "DELETE FROM sessions WHERE conversation_id = ?", (conversation_id,)
@@ -211,7 +243,21 @@ class SqliteSessionStore:
             except json.JSONDecodeError:
                 logger.warning("Corrupt session payload for chat %s; discarding", conversation_id)
                 return None
-            return Session(session_id, conversation_id, created_at, last_active_at, messages, turns)
+            try:
+                tainted_by = tuple(json.loads(taint or "[]"))
+            except json.JSONDecodeError:
+                # Unreadable means unknown, and unknown must mean
+                # suspicious: the safe default is the restrictive one.
+                tainted_by = ("unreadable",)
+            return Session(
+                session_id,
+                conversation_id,
+                created_at,
+                last_active_at,
+                messages,
+                turns,
+                tainted_by,
+            )
 
     def history(self, conversation_id: str, now: float | None = None) -> list[Mapping[str, Any]]:
         session = self.active(conversation_id, now)
@@ -225,9 +271,10 @@ class SqliteSessionStore:
         messages: Iterable[Mapping[str, Any]],
         *,
         now: float | None = None,
+        tainted_by: Iterable[str] = (),
     ) -> Session:
         """Persist history for a chat, creating or extending its session."""
-        moment = now or time.time()
+        moment = _moment(now)
         cleaned = close_open_tool_calls(list(messages))
         trimmed = trim_history(
             cleaned, max_messages=self.max_messages, max_bytes=self.max_bytes
@@ -236,7 +283,7 @@ class SqliteSessionStore:
 
         with self._lock:
             row = self._connection.execute(
-                "SELECT session_id, created_at, last_active_at, turns "
+                "SELECT session_id, created_at, last_active_at, turns, tainted_by "
                 "FROM sessions WHERE conversation_id = ?",
                 (conversation_id,),
             ).fetchone()
@@ -245,22 +292,43 @@ class SqliteSessionStore:
                 session_id = uuid.uuid4().hex[:12]
                 created_at = moment
                 turns = 1
+                carried: tuple[str, ...] = ()
             else:
                 session_id, created_at, _, turns = row[0], row[1], row[2], row[3] + 1
+                try:
+                    carried = tuple(json.loads(row[4] or "[]"))
+                except json.JSONDecodeError:
+                    carried = ("unreadable",)
+
+            # Accumulated, never replaced. A turn that happens to read
+            # nothing untrusted does not clear what an earlier one did:
+            # that text is still in the history being replayed.
+            taint = tuple(dict.fromkeys([*carried, *(str(name) for name in tainted_by)]))
 
             self._connection.execute(
                 "INSERT INTO sessions "
-                "(conversation_id, session_id, created_at, last_active_at, turns, messages) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
+                "(conversation_id, session_id, created_at, last_active_at, turns, messages, "
+                "tainted_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(conversation_id) DO UPDATE SET "
                 "session_id=excluded.session_id, created_at=excluded.created_at, "
                 "last_active_at=excluded.last_active_at, turns=excluded.turns, "
-                "messages=excluded.messages",
-                (conversation_id, session_id, created_at, moment, turns, payload),
+                "messages=excluded.messages, tainted_by=excluded.tainted_by",
+                (
+                    conversation_id,
+                    session_id,
+                    created_at,
+                    moment,
+                    turns,
+                    payload,
+                    json.dumps(list(taint)),
+                ),
             )
             self._connection.commit()
 
-        return Session(session_id, conversation_id, created_at, moment, tuple(trimmed), turns)
+        return Session(
+            session_id, conversation_id, created_at, moment, tuple(trimmed), turns, taint
+        )
 
     def reset(self, conversation_id: str) -> bool:
         """End the current session. Returns True if one was active."""
@@ -272,7 +340,7 @@ class SqliteSessionStore:
             return cursor.rowcount > 0
 
     def purge_expired(self, now: float | None = None) -> int:
-        moment = now or time.time()
+        moment = _moment(now)
         with self._lock:
             cursor = self._connection.execute(
                 "DELETE FROM sessions WHERE ? - last_active_at >= ?",

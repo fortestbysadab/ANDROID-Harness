@@ -104,9 +104,20 @@ class AgentRuntime:
         actor_id: str,
         conversation_id: str,
         prior_messages: Sequence[Mapping[str, Any]] = (),
+        tainted_by: Sequence[str] = (),
     ) -> RunOutcome:
         run_id = uuid.uuid4().hex
-        state = RunState(run_id=run_id, actor_id=str(actor_id))
+        # Taint arrives with the conversation, not just with this turn.
+        # The untrusted text that caused it is in prior_messages, about
+        # to be replayed to the model, so the suspicion has to come with
+        # it - otherwise a planted instruction simply waits one turn.
+        carried = tuple(dict.fromkeys(str(name) for name in tainted_by))
+        state = RunState(
+            run_id=run_id,
+            actor_id=str(actor_id),
+            tainted=bool(carried),
+            tainted_by=carried,
+        )
 
         messages: list[Mapping[str, Any]] = []
         preamble = "\n\n".join(

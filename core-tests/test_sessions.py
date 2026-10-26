@@ -170,3 +170,103 @@ class TestTheStore:
         sessions = store(tmp_path)
         saved = sessions.save("chat-1", [user("send it"), assistant_calling("c1")])
         assert saved.messages[-1]["role"] == "tool"
+
+
+class TestRememberingTaint:
+    """Taint is stored beside the history, because it describes it.
+
+    The two must travel together: the history is what gets replayed to
+    the model, and the taint is the reason to be careful about it.
+    Keeping them in separate places is how they drift apart.
+    """
+
+    def store(self, tmp_path, **kwargs):
+        return SqliteSessionStore(str(tmp_path / "sessions.sqlite3"), **kwargs)
+
+    def test_a_fresh_conversation_is_clean(self, tmp_path):
+        store = self.store(tmp_path)
+        session = store.save("c", [{"role": "user", "content": "hi"}])
+        assert session.tainted is False
+        assert session.tainted_by == ()
+
+    def test_taint_is_written_and_read_back(self, tmp_path):
+        store = self.store(tmp_path)
+        store.save("c", [{"role": "user", "content": "hi"}], tainted_by=["get_notifications"])
+        assert store.active("c").tainted_by == ("get_notifications",)
+
+    def test_a_later_clean_save_does_not_clear_it(self, tmp_path):
+        # The whole point. A turn that reads nothing untrusted does not
+        # remove the untrusted text an earlier turn put in the history.
+        store = self.store(tmp_path)
+        store.save("c", [{"role": "user", "content": "hi"}], tainted_by=["get_notifications"])
+        store.save("c", [{"role": "user", "content": "hi again"}])
+        assert store.active("c").tainted_by == ("get_notifications",)
+
+    def test_sources_accumulate_without_duplicating(self, tmp_path):
+        store = self.store(tmp_path)
+        store.save("c", [{"role": "user", "content": "a"}], tainted_by=["get_notifications"])
+        store.save("c", [{"role": "user", "content": "b"}], tainted_by=["read_email"])
+        store.save("c", [{"role": "user", "content": "c"}], tainted_by=["get_notifications"])
+        assert store.active("c").tainted_by == ("get_notifications", "read_email")
+
+    def test_resetting_clears_it(self, tmp_path):
+        store = self.store(tmp_path)
+        store.save("c", [{"role": "user", "content": "a"}], tainted_by=["get_notifications"])
+        store.reset("c")
+        store.save("c", [{"role": "user", "content": "b"}])
+        assert store.active("c").tainted_by == ()
+
+    def test_an_expired_session_starts_clean(self, tmp_path):
+        # The history went with the session, so the reason for the
+        # suspicion went too.
+        store = self.store(tmp_path, ttl_seconds=10)
+        store.save("c", [{"role": "user", "content": "a"}], tainted_by=["get_notifications"], now=0)
+        session = store.save("c", [{"role": "user", "content": "b"}], now=1000)
+        assert session.tainted_by == ()
+
+    def test_two_conversations_do_not_share_taint(self, tmp_path):
+        store = self.store(tmp_path)
+        store.save("a", [{"role": "user", "content": "x"}], tainted_by=["get_notifications"])
+        store.save("b", [{"role": "user", "content": "y"}])
+        assert store.active("b").tainted_by == ()
+
+    def test_an_older_database_without_the_column_is_migrated(self, tmp_path):
+        # Shipping a change that drops the owner's conversations to make
+        # room for a new column would be its own bug.
+        import sqlite3
+
+        path = tmp_path / "sessions.sqlite3"
+        old = sqlite3.connect(str(path))
+        old.execute(
+            "CREATE TABLE sessions (conversation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, "
+            "created_at REAL NOT NULL, last_active_at REAL NOT NULL, "
+            "turns INTEGER NOT NULL DEFAULT 0, messages TEXT NOT NULL)"
+        )
+        import time as _time
+
+        now = _time.time()
+        old.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?)",
+            ("c", "old-session", now, now, 3, '[{"role": "user", "content": "kept"}]'),
+        )
+        old.commit()
+        old.close()
+
+        store = SqliteSessionStore(str(path))
+        session = store.active("c")
+        assert session is not None
+        assert session.messages[0]["content"] == "kept"
+        assert session.tainted_by == ()
+
+    def test_unreadable_taint_is_treated_as_tainted(self, tmp_path):
+        # Unknown must mean suspicious; the safe default is the
+        # restrictive one.
+        import sqlite3
+
+        store = self.store(tmp_path)
+        store.save("c", [{"role": "user", "content": "a"}])
+        raw = sqlite3.connect(str(tmp_path / "sessions.sqlite3"))
+        raw.execute("UPDATE sessions SET tainted_by = 'not json'")
+        raw.commit()
+        raw.close()
+        assert store.active("c").tainted is True

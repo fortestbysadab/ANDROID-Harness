@@ -334,3 +334,125 @@ class TestApproving:
         restarted = Agent(str(tmp_path / "agent"))
         assert restarted.approvals.pending("owner"), "the row should still be in the store"
         assert json.loads(restarted.pending_approvals()) == []
+
+
+class TestTaintOutlivesTheTurn:
+    """The bug the owner found on the phone.
+
+    Reading notifications tainted the run, and the next question got a
+    clean one - so asking for location straight afterwards sailed
+    through without stopping. The reasoning was wrong in a specific
+    way: taint was treated as a property of a *turn*, when the text
+    that causes it lives in the *conversation* and is replayed to the
+    model on every later turn. A planted instruction only had to wait.
+
+    Taint now lasts exactly as long as the text does: for the life of
+    the session, and no longer.
+    """
+
+    def untrusted_tool(self, tmp_path, planner):
+        agent = Agent(str(tmp_path / "agent"))
+        reader = FakeNativeTool('{"status":"ok","summary":"Rafi: are you coming?"}')
+        register_native_tool(
+            agent.registry,
+            name="get_notifications",
+            description="Read recent notifications.",
+            input_schema={"type": "object", "properties": {}},
+            risk="sensitive_read",
+            handler=reader,
+            returns_untrusted_content=True,
+        )
+        locator = FakeNativeTool('{"status":"ok","summary":"23.68, 86.98"}')
+        register_native_tool(
+            agent.registry,
+            name="get_location",
+            description="Find where the phone is.",
+            input_schema={"type": "object", "properties": {}},
+            risk="sensitive_read",
+            handler=locator,
+        )
+        agent.configure_model("https://example.test/v1", "test-model", None)
+        agent._runtime.planner = planner
+        agent._unattended.planner = planner
+        return agent, reader, locator
+
+    def call(self, name, call_id="c1"):
+        return PlannerResponse(tool_calls=(ToolCall(id=call_id, name=name, arguments={}),))
+
+    def test_reading_notifications_taints_the_conversation(self, tmp_path):
+        planner = ScriptedPlanner(self.call("get_notifications"), PlannerResponse(text="one message"))
+        agent, _, _ = self.untrusted_tool(tmp_path, planner)
+        assert json.loads(agent.ask("any notifications?"))["tainted"] is True
+
+    def test_a_later_turn_still_knows_the_conversation_is_tainted(self, tmp_path):
+        # The failure the owner saw: this second turn used to come back
+        # clean, and the location read went through unchallenged.
+        planner = ScriptedPlanner(
+            self.call("get_notifications"),
+            PlannerResponse(text="one message"),
+            self.call("get_location", "c2"),
+        )
+        agent, _, locator = self.untrusted_tool(tmp_path, planner)
+        agent.ask("any notifications?")
+        second = json.loads(agent.ask("where am I?"))
+        assert second["status"] == "needs_approval"
+        assert locator.calls == 0
+
+    def test_the_taint_is_attributed_to_the_tool_that_caused_it(self, tmp_path):
+        planner = ScriptedPlanner(
+            self.call("get_notifications"),
+            PlannerResponse(text="one message"),
+            PlannerResponse(text="hello"),
+        )
+        agent, _, _ = self.untrusted_tool(tmp_path, planner)
+        agent.ask("any notifications?")
+        assert json.loads(agent.ask("hello"))["tainted_by"] == ["get_notifications"]
+
+    def test_a_clean_turn_does_not_wash_the_conversation_clean(self, tmp_path):
+        # The untrusted text is still in the history being replayed, so
+        # a quiet turn in between proves nothing.
+        planner = ScriptedPlanner(
+            self.call("get_notifications"),
+            PlannerResponse(text="one message"),
+            PlannerResponse(text="nothing to do"),
+            self.call("get_location", "c3"),
+        )
+        agent, _, locator = self.untrusted_tool(tmp_path, planner)
+        agent.ask("any notifications?")
+        agent.ask("thanks")
+        assert json.loads(agent.ask("where am I?"))["status"] == "needs_approval"
+        assert locator.calls == 0
+
+    def test_a_new_conversation_starts_clean(self, tmp_path):
+        # Reset throws the history away, so the text that justified the
+        # suspicion is gone and the suspicion must go with it.
+        planner = ScriptedPlanner(
+            self.call("get_notifications"),
+            PlannerResponse(text="one message"),
+            self.call("get_location", "c2"),
+            PlannerResponse(text="you are here"),
+        )
+        agent, _, locator = self.untrusted_tool(tmp_path, planner)
+        agent.ask("any notifications?")
+        agent.reset()
+        assert json.loads(agent.ask("where am I?"))["status"] == "completed"
+        assert locator.calls == 1
+
+    def test_an_untainted_conversation_reads_location_without_asking(self, tmp_path):
+        # The control: the stop must come from the taint, not from
+        # sensitive_read being unusable.
+        planner = ScriptedPlanner(self.call("get_location"), PlannerResponse(text="you are here"))
+        agent, _, locator = self.untrusted_tool(tmp_path, planner)
+        assert json.loads(agent.ask("where am I?"))["status"] == "completed"
+        assert locator.calls == 1
+
+    def test_taint_survives_a_restart_because_the_history_does(self, tmp_path):
+        planner = ScriptedPlanner(
+            self.call("get_notifications"),
+            PlannerResponse(text="one message"),
+        )
+        agent, _, _ = self.untrusted_tool(tmp_path, planner)
+        agent.ask("any notifications?")
+
+        later = Agent(str(tmp_path / "agent"))
+        assert later.sessions.active("device").tainted_by == ("get_notifications",)
