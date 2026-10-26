@@ -34,6 +34,15 @@ jobs:
       # Deliberately NOT using android-actions/setup-android: it invokes
       # "sdkmanager tools", a package that no longer exists, and fails
       # before Gradle starts. The runner image already provides the SDK.
+      # Chaquopy compiles the bundled Python to bytecode at build time,
+      # and bytecode is version-specific: without a matching interpreter
+      # on the runner it silently falls back to compiling on the device,
+      # at every app start.
+      - name: Set up Python 3.13 for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Use the preinstalled Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"

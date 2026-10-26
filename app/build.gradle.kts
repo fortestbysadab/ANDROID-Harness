@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.chaquo.python")
 }
 
 android {
@@ -15,6 +16,19 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1-phase0"
+
+        // Without this the APK carries a CPython build for every ABI.
+        // arm64 is every phone that matters now; x86_64 keeps emulators
+        // working for anyone who tries to reproduce a bug.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // Python 3.13 or later is required for devices with 16 KB memory
+    // pages, which is the direction Android is moving.
+    chaquopy {
+        defaultConfig {
+            version = "3.13"
+        }
     }
 
     buildTypes {

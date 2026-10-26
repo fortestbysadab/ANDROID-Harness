@@ -13,6 +13,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import com.androidharness.core.AgentCore
 import com.androidharness.sandbox.SandboxLimits
 import com.androidharness.sandbox.SandboxOutcome
 import com.androidharness.sandbox.SandboxRequest
@@ -149,6 +150,21 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "Time the sandbox"
                 setOnClickListener { runBenchmark() }
+            },
+        )
+
+        root.addView(heading("Agent core"))
+        root.addView(
+            body(
+                "A second Python, embedded in this app rather than in Termux. " +
+                    "It runs the agent itself, never model-written code - that " +
+                    "stays on the far side of the UID boundary.",
+            ),
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Start the core and ask it to report"
+                setOnClickListener { runCoreProbe() }
             },
         )
 
@@ -384,6 +400,29 @@ class DiagnosticsActivity : AppCompatActivity() {
         ) { finished.countDown() }
         finished.await(30, TimeUnit.SECONDS)
         return SystemClock.elapsedRealtime() - started
+    }
+
+    private fun runCoreProbe() {
+        outputView.text = "Starting the embedded interpreter…"
+        worker.execute {
+            val report = AgentCore.probe(this)
+            val text = buildString {
+                append("[core]\n")
+                append("interpreter start: ${report.startupMillis} ms")
+                append(if (report.startupMillis < 0) " (already running)\n" else "\n")
+                append("probe call:        ${report.callMillis} ms\n\n")
+                append(report.text)
+                append("\n\nverdict: ")
+                append(
+                    if (report.text.contains("sqlite") && report.text.contains("writable")) {
+                        "CORE RUNS - the stdlib and a writable store are both there."
+                    } else {
+                        "CORE INCOMPLETE - read the fields above."
+                    },
+                )
+            }
+            runOnUiThread { outputView.text = text }
+        }
     }
 
     private fun requestAllFilesAccess() {

@@ -161,60 +161,70 @@ back. **Met.** Needs **all-files access** granted to this app, and
 **`termux-setup-storage`** run once in Termux — without it the wrapper
 reports `__HARNESS_NO_STORAGE__` and the app says so.
 
-**1c — a resident daemon**
+**1c — a resident daemon — MEASURED, AND DROPPED**
 
-Started once via `RUN_COMMAND`, so a document does not pay process-spawn
-cost per run.
+Measured on the owner's device, 2026-10-26, realme RMP2402, median of
+five runs:
 
-**Measure before building.** This is the one phase that exists purely for
-speed, so it is gated on a number rather than an intuition. The
-diagnostics screen now times three nested layers, five runs each, and
-reports the medians:
+| layer | median | the cost it isolates |
+| --- | --- | --- |
+| `echo` in Termux | 53 ms | Termux IPC |
+| wrapper with `sh` | 243 ms | **+190 ms** for proot |
+| wrapper with `python` | 348 ms | **+105 ms** for the interpreter |
 
-| layer | what it adds |
-| --- | --- |
-| `echo` in Termux | starting the service, and the `PendingIntent` coming back |
-| the wrapper with `sh` | the whole script, `proot` included |
-| the wrapper with `python` | the interpreter starting cold |
+**The phase as planned would have been a waste.** A resident Termux
+session removes the 53 ms of IPC and nothing else - 15% of a run - while
+adding a polled file channel on shared storage, a MAC scheme to stop
+other apps injecting jobs, and a liveness problem when Android kills the
+session. The expensive part, proot at 190 ms, is exactly what it would
+not have touched.
 
-The gaps decide the design, and they point at different daemons:
+And 348 ms is not a problem worth solving. A run sits behind a model
+call measured in seconds; shaving a third of a second off it is
+invisible. **Measured before building, so the cost of being wrong was
+one button instead of a subsystem.**
 
-- **Termux IPC dominates** → keep one Termux session resident and feed it
-  work. That is the phase as written.
-- **The interpreter dominates** → a resident session saves almost
-  nothing; Python itself has to stay warm, which means a long-lived
-  Python process reading jobs rather than a long-lived shell.
-- **Nothing exceeds ~150 ms** → do not build it. Delete this phase and
-  spend the time on Phase 2.
+If it ever does matter, the measurement says what to build instead: keep
+*proot and the interpreter* warm - one long-lived Python process inside
+one long-lived proot container, taking jobs - not a resident shell. That
+would address 295 ms of the 348. Two findings already stand for whenever
+that day comes:
 
-**A constraint already known, before any of it is designed.** The daemon
-cannot be reached through a named pipe. This app cannot write into
-Termux's private directory - different Android users, which is the entire
-reason the sandbox lives over there - so the channel has to be shared
-storage, and shared storage is FUSE-emulated: `mkfifo` is refused there,
-and has been on every Android version. So the transport is ordinary files
-plus polling, which puts a floor under latency that has to be weighed
-against whatever the measurement shows.
-
-**And a risk that comes with it.** A daemon reading jobs out of shared
-storage is reachable by any app on the device holding storage access -
-that would be arbitrary code execution in Termux, handed over for free.
-So a job is only honoured if it carries a MAC over its contents, keyed by
-a secret this app generates at daemon start and passes in the
-`RUN_COMMAND` arguments. The secret is never written to disk. Unsigned or
-stale jobs are ignored, not run.
-
-- [x] Timing button, measuring the three layers separately
-- [ ] Numbers from the owner's device
-- [ ] Design chosen on the strength of those numbers
-- [ ] Daemon, if the numbers justify one
-
-Exit: a Python script writes a PDF and the app reads it back.
+- **No named pipes.** The channel must be shared storage, because this
+  app cannot write into Termux's private directory, and `mkfifo` is
+  refused on FUSE-emulated storage. Polling, therefore, with a latency
+  floor of its own.
+- **A daemon taking jobs from shared storage is reachable by any app
+  with storage access** - free arbitrary code execution in Termux. Jobs
+  would need a MAC keyed by a secret passed at startup and never written
+  to disk.
 
 ### Phase 2 — Agent core
 
 Ported from the predecessor largely unchanged; it is plain Python with no
 Termux assumptions. Runs under Chaquopy.
+
+**2a — prove the embedding first.** The same discipline as Phase 0: no
+code is ported until CPython is shown to start in this app and bring a
+usable standard library with it. The probe checks the three things the
+core cannot do without - the interpreter itself, the compiled stdlib
+modules `sqlite3` and `hashlib` that a repackaged stdlib tends to lose,
+and a writable private directory, since durable approvals were a known
+defect in the predecessor and the fix is a database on disk.
+
+- [x] Chaquopy on the build, Python 3.13, arm64 and x86_64 only
+- [x] `harness_core` package and a probe that reports rather than greets
+- [x] Interpreter start timed separately from the call
+- [ ] Confirmed on the owner's device
+
+Exit: the app starts its own interpreter, imports the stdlib, and writes
+a file to its private directory.
+
+**Note on having two Pythons.** They are not redundant. The embedded one
+runs the agent and holds the keys; the Termux one runs model-written
+code under a different Android user. Merging them would put untrusted
+code in the same process as the secrets, which is the exact arrangement
+this architecture exists to avoid.
 
 - Planner, tool registry, runtime loop, sessions
 - Policy engine: risk × actor → allow / approve / deny
