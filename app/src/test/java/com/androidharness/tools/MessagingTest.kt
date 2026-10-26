@@ -43,7 +43,17 @@ class MessagingTest {
 
     @Test
     fun `spaces, dashes and brackets are how people write numbers`() {
-        assertEquals("+913412222222", dialable("+91 (0341) 222-2222"))
+        assertEquals("03412222222", dialable("(0341) 222-2222"))
+    }
+
+    @Test
+    fun `a trunk zero is kept, because removing it would be a repair`() {
+        // Tempting to strip: "+91 (0) 98765 43210" is not a valid
+        // international number with the zero in it. But deciding which
+        // zero is a trunk prefix is a guess about dialling plans, and a
+        // guess here rings somebody. The digits are passed through as
+        // written and the network can refuse them.
+        assertEquals("+91098765432", dialable("+91 (0) 98765 432"))
     }
 
     @Test

@@ -606,7 +606,9 @@ failing silently at the one moment when silence is worst.
 
 - [x] `send_sms`, `place_call`
 - [x] Approvals state the exact action; 7 tests, 5 mutants, 5 killed
-- [x] 20 JVM tests on number and message handling
+- [x] 21 JVM tests on number and message handling, including that a
+      trunk zero is kept — deciding which zero is a dialling-plan
+      prefix is a guess, and a guess here rings somebody
 - [ ] Confirmed on the owner's device
 
 
