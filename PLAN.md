@@ -215,10 +215,47 @@ defect in the predecessor and the fix is a database on disk.
 - [x] Chaquopy on the build, Python 3.13, arm64 and x86_64 only
 - [x] `harness_core` package and a probe that reports rather than greets
 - [x] Interpreter start timed separately from the call
-- [ ] Confirmed on the owner's device
+- [x] Confirmed on the owner's device — 2026-10-26, realme RMP2402:
+      CPython 3.13.16 on aarch64, SQLite 3.53.4, private directory
+      writable; interpreter start **556 ms**, probe call **3 ms**
 
 Exit: the app starts its own interpreter, imports the stdlib, and writes
-a file to its private directory.
+a file to its private directory. **Met.**
+
+The 556 ms is a one-time cost per process, and it is paid lazily on the
+first use. Before the core sits on the path of an incoming message, that
+start has to move to app launch, on a background thread, so the first
+request does not wait for it.
+
+**2b — the safety spine.** Ported first, because everything else is
+allowed to exist only once this is in place.
+
+- [x] `tools.py` — `Risk`, `ToolContext`, `ToolSpec`, schema validation,
+      `returns_untrusted_content`. Across unchanged; it was always plain
+      Python.
+- [x] `policy.py` — `DefaultPolicy` and `UnattendedPolicy`. Unchanged.
+- [x] `approvals.py` — **rewritten, not ported.** See below.
+- [x] 15 tests, all seven mutants killed
+- [x] Core tests run in CI on the runner's Python
+- [ ] Confirmed on the owner's device
+
+**Why the approval store was rewritten.** The predecessor kept approvals
+in a dictionary. Android restarts background processes constantly, so
+every pending approval died with the process, and the owner tapping
+"yes" was told it had expired — indistinguishable from a real timeout.
+It is now a SQLite table in the app's private directory, with three
+properties each held up by a test and checked by deleting the code that
+provides it:
+
+| property | how it is enforced |
+| --- | --- |
+| authorises one exact action | a sha256 over tool, version and arguments, re-computed at spend time rather than taken from the caller |
+| can be spent once | a conditional `UPDATE`; two racing callers cannot both see `rowcount == 1` |
+| expires | `expires_at` in the same `WHERE` clause |
+
+Refusals carry named codes — `approval_action_changed` is a very
+different event from `approval_expired`, and collapsing them would hide
+the only one that indicates an attack.
 
 **Note on having two Pythons.** They are not redundant. The embedded one
 runs the agent and holds the keys; the Termux one runs model-written

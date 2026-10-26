@@ -167,6 +167,12 @@ class DiagnosticsActivity : AppCompatActivity() {
                 setOnClickListener { runCoreProbe() }
             },
         )
+        root.addView(
+            Button(this).apply {
+                text = "Check the approval store"
+                setOnClickListener { runApprovalCheck() }
+            },
+        )
 
         outputView = body("Nothing run yet.").apply {
             typeface = android.graphics.Typeface.MONOSPACE
@@ -422,6 +428,14 @@ class DiagnosticsActivity : AppCompatActivity() {
                 )
             }
             runOnUiThread { outputView.text = text }
+        }
+    }
+
+    private fun runApprovalCheck() {
+        outputView.text = "Exercising the approval store…"
+        worker.execute {
+            val report = AgentCore.selfCheckApprovals(this)
+            runOnUiThread { outputView.text = "[approvals]\n" + report }
         }
     }
 

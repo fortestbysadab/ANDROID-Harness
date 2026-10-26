@@ -43,6 +43,13 @@ jobs:
         with:
           python-version: '3.13'
 
+      # The core is plain Python, so it is tested as plain Python -
+      # on the runner, in a second, without an emulator.
+      - name: Core tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest
+
       - name: Use the preinstalled Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"

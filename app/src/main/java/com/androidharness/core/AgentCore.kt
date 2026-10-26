@@ -47,6 +47,19 @@ object AgentCore {
         return startupMillis
     }
 
+    /** Runs the approval store through its whole life cycle on-device. */
+    fun selfCheckApprovals(context: Context): String {
+        ensureStarted(context)
+        return try {
+            Python.getInstance()
+                .getModule("harness_core.selfcheck")
+                .callAttr("approvals", context.filesDir.absolutePath)
+                .toString()
+        } catch (failure: PyException) {
+            "python raised:\n${failure.message}"
+        }
+    }
+
     /**
      * Asks the core to describe itself. Never call from the main thread:
      * the first call pays for extracting and loading a whole stdlib.
