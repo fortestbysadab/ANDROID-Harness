@@ -264,6 +264,47 @@ wrong and write a key to disk.
 - [x] `gate.py` with 17 tests
 - [x] `audit.py` rotating, with 11 tests
 - [x] 9 mutants, 8 killed, 1 survivor fixed by deleting dead code
+
+**2d — sessions and the run loop.**
+
+`planner.py` is the model-neutral contract, across unchanged:
+`ToolCall`, `PlannerResponse`, and the `Planner` protocol that cloud,
+local and test planners all satisfy. `extra_content` stays — Gemini
+thinking models require their own signature replayed verbatim, and it is
+never interpreted and never authorises anything.
+
+`sessions.py` is ported with one change: sessions are keyed by an opaque
+conversation id rather than the predecessor's numeric Telegram chat id,
+because the app is now the primary surface and channels come later. Its
+two structural invariants are the ones that matter — every proposed tool
+call gets a reply, and history is only ever cut at a user-message
+boundary — because breaking either makes the next provider request fail
+with a 400, which looks to the owner like the agent randomly stopped
+working. The port arrived without its tests, so it got 17 new ones; an
+untested port is just hopeful code.
+
+`runtime.py` is **rewritten, not ported.** The predecessor's runtime
+drove the conversation *and* re-implemented the policy and approval
+checks inline. Two places deciding whether something may run is exactly
+where an authorisation bug hides, because only one of them gets updated.
+Here the runtime drives the conversation and nothing else: every
+proposal goes through the gate, and the runtime could not run a tool
+directly if it tried.
+
+- [x] `planner.py`, `sessions.py`, `runtime.py`
+- [x] Three budgets: model turns, total tool calls, repeats of an
+      identical call
+- [x] A run needing approval **stops** rather than waiting — on a phone
+      nothing may answer for hours
+- [x] 79 core tests; 11 mutants, 11 killed
+- [ ] Confirmed on the owner's device — nothing to press yet; there is
+      no model client until 2e
+
+**2e — the model client.** `Planner` has no implementation yet, so the
+loop currently runs only against a scripted stand-in. Next: the
+OpenAI-compatible client, the Gemini quirks the predecessor already
+learned, and key storage.
+
 - [ ] Confirmed on the owner's device
 
 **Why the approval store was rewritten.** The predecessor kept approvals
