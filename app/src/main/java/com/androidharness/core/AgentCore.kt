@@ -47,6 +47,58 @@ object AgentCore {
         return startupMillis
     }
 
+    /**
+     * Ask the configured provider which models it will serve.
+     *
+     * Typing a model name by hand is the commonest way to get an opaque
+     * 404, so the app offers the list rather than asking the owner to
+     * remember it. Blocking; call it off the main thread.
+     */
+    fun listModels(context: Context, baseUrl: String, apiKey: String): Result<List<String>> {
+        ensureStarted(context)
+        return try {
+            val names = Python.getInstance()
+                .getModule("harness_core.llm")
+                .callAttr("list_models", baseUrl, apiKey.ifBlank { null })
+                .asList()
+                .map { it.toString() }
+            Result.success(names)
+        } catch (failure: PyException) {
+            Result.failure(IllegalStateException(describe(failure), failure))
+        }
+    }
+
+    /** Send one real request, to prove the whole path works end to end. */
+    fun testModel(
+        context: Context,
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+    ): Result<String> {
+        ensureStarted(context)
+        return try {
+            val reply = Python.getInstance()
+                .getModule("harness_core.selfcheck")
+                .callAttr("ask_the_model", baseUrl, model, apiKey.ifBlank { null })
+                .toString()
+            Result.success(reply)
+        } catch (failure: PyException) {
+            Result.failure(IllegalStateException(describe(failure), failure))
+        }
+    }
+
+    /**
+     * Pull the useful line out of a Python traceback.
+     *
+     * The planner raises errors that already carry an owner-facing
+     * remedy; burying that under forty lines of stack would waste it.
+     */
+    private fun describe(failure: PyException): String {
+        val message = failure.message.orEmpty()
+        val lastLine = message.trim().lines().lastOrNull().orEmpty()
+        return lastLine.substringAfter("Error: ", lastLine).ifBlank { message.take(400) }
+    }
+
     /** Runs the approval store through its whole life cycle on-device. */
     fun selfCheckApprovals(context: Context): String {
         ensureStarted(context)

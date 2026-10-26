@@ -67,3 +67,37 @@ def approvals(directory: str) -> str:
         "verdict: APPROVALS HOLD" if actual == expected else f"verdict: WRONG - {actual}"
     )
     return "\n".join(lines)
+
+
+def ask_the_model(base_url: str, model: str, api_key: str | None = None) -> str:
+    """One real round trip to the configured provider.
+
+    Deliberately end to end rather than a ping: listing models proves
+    the URL and key, but only a completion proves the *model name* is
+    one this endpoint will actually serve.
+    """
+    from harness_core.llm import OpenAICompatiblePlanner, PlannerError
+
+    planner = OpenAICompatiblePlanner(
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        timeout_seconds=45.0,
+    )
+    try:
+        response = planner.complete(
+            [{"role": "user", "content": "Reply with exactly: ok"}],
+            [],
+        )
+    except PlannerError as error:
+        remedy = getattr(error, "remedy", "")
+        return f"failed: {error}\n\n{remedy}".strip()
+
+    reported = (response.metadata or {}).get("model", model)
+    return (
+        f"endpoint: {planner.base_url}\n"
+        f"dialect:  {planner.dialect.value}\n"
+        f"model:    {reported}\n"
+        f"reply:    {(response.text or '').strip()[:200]}\n\n"
+        "verdict: MODEL REACHABLE"
+    )

@@ -9,6 +9,11 @@
     <!-- Targeting SDK 30+ hides other packages unless they are declared.
          Without this the intent fails silently, which is the single most
          common way this integration appears broken. -->
+    <!-- Talking to the model provider. Without this every request
+         fails as a transport error that looks like a bad network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <queries>
         <package android:name="com.termux" />
     </queries>

@@ -300,11 +300,41 @@ directly if it tried.
 - [ ] Confirmed on the owner's device — nothing to press yet; there is
       no model client until 2e
 
-**2e — the model client.** `Planner` has no implementation yet, so the
-loop currently runs only against a scripted stand-in. Next: the
-OpenAI-compatible client, the Gemini quirks the predecessor already
-learned, and key storage.
+**2e — the model client, provider-agnostic.**
 
+`llm.py` and `compat.py` come across from the predecessor. The dialect
+is OpenAI chat-completions, and that choice is what makes "any provider"
+work: Gemini's compatibility endpoint, OpenAI, OpenRouter, Groq,
+llama.cpp, Ollama and vLLM all answer it. Base URL and model name are
+owner-settable, with nothing hardcoded to one vendor.
+
+**Fetch the list, do not ask the owner to remember it.** A mistyped
+model name returns an opaque HTTP 404, so the app calls `GET
+{base}/models` and offers what comes back. Gemini lists
+`models/gemini-2.5-flash` while its chat endpoint wants
+`gemini-2.5-flash`, so names are returned bare — handing over a name
+that does not work would be worse than no list at all.
+
+**Where the key lives.** `EncryptedSharedPreferences` was the obvious
+answer and is now the wrong one: Jetpack Security Crypto was deprecated
+at 1.1.0 in 2025 with no replacement planned, and its own note points at
+"existing platform APIs and direct use of Android Keystore". The
+suggested successor, DataStore plus Tink, is a large dependency for one
+short string. So `SecretStore` does exactly what the deprecation notice
+describes: an AES-GCM key generated in the Android Keystore, ciphertext
+in ordinary preferences. The key cannot be extracted, by this app or any
+other. It does *not* defend against a compromised copy of this app —
+nothing local does, and claiming otherwise would be worse than saying so.
+
+The Keystore key deliberately does not require device unlock: scheduled
+tasks must run while the phone is locked, and a key the agent cannot use
+at 3 a.m. is a feature that does not work.
+
+- [x] `llm.py`, `compat.py`, `list_models`
+- [x] `SecretStore` (Keystore AES-GCM), `ProviderSettings`
+- [x] Provider section in diagnostics: URL, model, key, fetch, test
+- [x] `INTERNET` permission — its absence looks exactly like a network fault
+- [x] 24 provider tests, no network touched
 - [ ] Confirmed on the owner's device
 
 **Why the approval store was rewritten.** The predecessor kept approvals

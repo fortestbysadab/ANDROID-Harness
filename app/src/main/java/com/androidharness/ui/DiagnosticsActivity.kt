@@ -6,14 +6,18 @@ import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.InputType
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.androidharness.core.AgentCore
+import com.androidharness.core.ProviderSettings
 import com.androidharness.sandbox.SandboxLimits
 import com.androidharness.sandbox.SandboxOutcome
 import com.androidharness.sandbox.SandboxRequest
@@ -42,6 +46,9 @@ class DiagnosticsActivity : AppCompatActivity() {
     private lateinit var remedyView: TextView
     private lateinit var outputView: TextView
     private lateinit var storageView: TextView
+    private lateinit var baseUrlField: EditText
+    private lateinit var modelField: EditText
+    private lateinit var apiKeyField: EditText
     private lateinit var permissionButton: Button
     private val sandbox by lazy { TermuxSandbox(applicationContext) }
     private val worker = Executors.newSingleThreadExecutor()
@@ -171,6 +178,41 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "Check the approval store"
                 setOnClickListener { runApprovalCheck() }
+            },
+        )
+
+        root.addView(heading("Model provider"))
+        root.addView(
+            body(
+                "Any OpenAI-compatible endpoint: Gemini, OpenAI, OpenRouter, " +
+                    "Groq, or a local llama.cpp, Ollama or vLLM server. Fetch " +
+                    "the list rather than typing a model name - a wrong name " +
+                    "comes back as an unhelpful 404.",
+            ),
+        )
+        val saved = ProviderSettings.load(this)
+        baseUrlField = field("Base URL", saved.baseUrl)
+        modelField = field("Model name", saved.model)
+        apiKeyField = field("API key", saved.apiKey)
+        root.addView(baseUrlField)
+        root.addView(modelField)
+        root.addView(apiKeyField)
+        root.addView(
+            Button(this).apply {
+                text = "Save"
+                setOnClickListener { saveProvider() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Fetch the model list"
+                setOnClickListener { fetchModels() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Test the model"
+                setOnClickListener { testModel() }
             },
         )
 
@@ -436,6 +478,85 @@ class DiagnosticsActivity : AppCompatActivity() {
         worker.execute {
             val report = AgentCore.selfCheckApprovals(this)
             runOnUiThread { outputView.text = "[approvals]\n" + report }
+        }
+    }
+
+    private fun field(label: String, initial: String): EditText =
+        EditText(this).apply {
+            hint = label
+            setText(initial)
+            setSingleLine()
+            // The key is a secret the owner pastes in; it should not be
+            // offered to a keyboard that learns what it is told.
+            inputType = if (label == "API key") {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            } else {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            }
+        }
+
+    private fun currentProvider(): ProviderSettings.Config =
+        ProviderSettings.Config(
+            baseUrl = baseUrlField.text.toString().trim(),
+            model = modelField.text.toString().trim(),
+            apiKey = apiKeyField.text.toString().trim(),
+        )
+
+    private fun saveProvider() {
+        val config = currentProvider()
+        ProviderSettings.save(this, config.baseUrl, config.model, config.apiKey)
+        outputView.text = "[provider] saved\n\n" + ProviderSettings.load(this).describe()
+    }
+
+    private fun fetchModels() {
+        val config = currentProvider()
+        outputView.text = "Asking ${config.baseUrl} what it serves…"
+        worker.execute {
+            val found = AgentCore.listModels(this, config.baseUrl, config.apiKey)
+            runOnUiThread {
+                found.fold(
+                    onSuccess = { names ->
+                        if (names.isEmpty()) {
+                            outputView.text = "[provider] the endpoint listed no models."
+                        } else {
+                            showModelPicker(names)
+                        }
+                    },
+                    onFailure = { error ->
+                        outputView.text = "[provider] could not fetch the list\n\n" +
+                            error.message.orEmpty()
+                    },
+                )
+            }
+        }
+    }
+
+    private fun showModelPicker(names: List<String>) {
+        AlertDialog.Builder(this)
+            .setTitle("${names.size} models available")
+            .setItems(names.toTypedArray()) { _, index ->
+                modelField.setText(names[index])
+                saveProvider()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun testModel() {
+        val config = currentProvider()
+        if (!config.usable) {
+            outputView.text = "[provider] set a base URL and a model name first."
+            return
+        }
+        outputView.text = "Sending one request to ${config.model}…"
+        worker.execute {
+            val reply = AgentCore.testModel(this, config.baseUrl, config.model, config.apiKey)
+            runOnUiThread {
+                outputView.text = "[provider]\n" + reply.fold(
+                    onSuccess = { it },
+                    onFailure = { "failed: " + it.message.orEmpty() },
+                )
+            }
         }
     }
 
