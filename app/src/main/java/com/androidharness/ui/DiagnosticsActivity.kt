@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Button
@@ -22,7 +23,9 @@ import com.androidharness.termux.TermuxBridge
 import com.androidharness.termux.TermuxConstants
 import com.androidharness.termux.TermuxReadiness
 import com.androidharness.termux.TermuxStatus
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Phase 0: prove the round trip.
@@ -140,6 +143,12 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "Write a file in the sandbox and read it back"
                 setOnClickListener { runFileRoundTrip() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Time the sandbox"
+                setOnClickListener { runBenchmark() }
             },
         )
 
@@ -285,6 +294,98 @@ class DiagnosticsActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Measures where a run's time actually goes, before anything is built
+     * to make it faster.
+     *
+     * Three layers are timed, each a superset of the one above, so the
+     * differences isolate the costs:
+     *
+     *  - **echo**: one Termux round trip and nothing else. This is the
+     *    floor - starting the service and getting a PendingIntent back.
+     *  - **sh**: the full wrapper, proot included, running a shell no-op.
+     *  - **python**: the same, running an empty Python script.
+     *
+     * The gaps say which daemon is worth building. If most of the time is
+     * in `echo`, a resident Termux session is the answer. If it is in
+     * `python`, the interpreter has to stay warm instead, and keeping the
+     * session alive would buy almost nothing.
+     */
+    private fun runBenchmark() {
+        outputView.text = "Timing… this runs fifteen commands and takes a moment."
+        worker.execute {
+            val echo = measure(REPEATS) { timeEcho() }
+            val shell = measure(REPEATS) { timeSandbox("sh") }
+            val python = measure(REPEATS) { timeSandbox("python") }
+
+            val report = buildString {
+                append("[timing] median of $REPEATS runs, milliseconds\n\n")
+                append(line("termux round trip", echo))
+                append(line("+ wrapper and proot", shell))
+                append(line("+ python startup", python))
+                append("\nwhere the time goes:\n")
+                val ipc = echo.median
+                val proot = shell.median - echo.median
+                val interpreter = python.median - shell.median
+                append("  termux ipc:   $ipc ms\n")
+                append("  proot:        $proot ms\n")
+                append("  interpreter:  $interpreter ms\n")
+                append("  total:        ${python.median} ms\n\n")
+                append(verdict(ipc, proot, interpreter))
+            }
+            runOnUiThread { outputView.text = report }
+        }
+    }
+
+    private fun verdict(ipc: Long, proot: Long, interpreter: Long): String {
+        val biggest = maxOf(ipc, proot, interpreter)
+        return when {
+            biggest < 150 ->
+                "verdict: FAST ENOUGH - a daemon would be premature."
+            biggest == ipc ->
+                "verdict: TERMUX IPC DOMINATES - a resident session is the fix."
+            biggest == interpreter ->
+                "verdict: INTERPRETER DOMINATES - a resident session would " +
+                    "barely help; python itself has to stay warm."
+            else ->
+                "verdict: PROOT DOMINATES - the container setup is the cost, " +
+                    "not the plumbing around it."
+        }
+    }
+
+    private fun line(label: String, t: Timing): String =
+        "  ${label.padEnd(20)} median ${t.median}  min ${t.min}  max ${t.max}\n"
+
+    private data class Timing(val median: Long, val min: Long, val max: Long)
+
+    /** A median, because one slow scheduling hiccup should not set the number. */
+    private fun measure(repeats: Int, once: () -> Long): Timing {
+        val samples = (1..repeats).map { once() }.sorted()
+        return Timing(samples[samples.size / 2], samples.first(), samples.last())
+    }
+
+    private fun timeSandbox(interpreter: String): Long {
+        val started = SystemClock.elapsedRealtime()
+        // An empty script: this measures the machinery, not the work.
+        sandbox.run(
+            SandboxRequest(script = "", interpreter = interpreter),
+            SandboxLimits(),
+        )
+        return SystemClock.elapsedRealtime() - started
+    }
+
+    private fun timeEcho(): Long {
+        val started = SystemClock.elapsedRealtime()
+        val finished = CountDownLatch(1)
+        TermuxBridge.run(
+            context = this,
+            executable = "${TermuxConstants.BIN}/echo",
+            arguments = listOf("x"),
+        ) { finished.countDown() }
+        finished.await(30, TimeUnit.SECONDS)
+        return SystemClock.elapsedRealtime() - started
+    }
+
     private fun requestAllFilesAccess() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             ActivityCompat.requestPermissions(
@@ -381,5 +482,8 @@ class DiagnosticsActivity : AppCompatActivity() {
     private companion object {
         const val REQUEST_RUN_COMMAND = 1
         const val REQUEST_STORAGE = 2
+
+        /** Enough to median away a hiccup, few enough to stay bearable. */
+        const val REPEATS = 5
     }
 }

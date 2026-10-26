@@ -166,6 +166,49 @@ reports `__HARNESS_NO_STORAGE__` and the app says so.
 Started once via `RUN_COMMAND`, so a document does not pay process-spawn
 cost per run.
 
+**Measure before building.** This is the one phase that exists purely for
+speed, so it is gated on a number rather than an intuition. The
+diagnostics screen now times three nested layers, five runs each, and
+reports the medians:
+
+| layer | what it adds |
+| --- | --- |
+| `echo` in Termux | starting the service, and the `PendingIntent` coming back |
+| the wrapper with `sh` | the whole script, `proot` included |
+| the wrapper with `python` | the interpreter starting cold |
+
+The gaps decide the design, and they point at different daemons:
+
+- **Termux IPC dominates** → keep one Termux session resident and feed it
+  work. That is the phase as written.
+- **The interpreter dominates** → a resident session saves almost
+  nothing; Python itself has to stay warm, which means a long-lived
+  Python process reading jobs rather than a long-lived shell.
+- **Nothing exceeds ~150 ms** → do not build it. Delete this phase and
+  spend the time on Phase 2.
+
+**A constraint already known, before any of it is designed.** The daemon
+cannot be reached through a named pipe. This app cannot write into
+Termux's private directory - different Android users, which is the entire
+reason the sandbox lives over there - so the channel has to be shared
+storage, and shared storage is FUSE-emulated: `mkfifo` is refused there,
+and has been on every Android version. So the transport is ordinary files
+plus polling, which puts a floor under latency that has to be weighed
+against whatever the measurement shows.
+
+**And a risk that comes with it.** A daemon reading jobs out of shared
+storage is reachable by any app on the device holding storage access -
+that would be arbitrary code execution in Termux, handed over for free.
+So a job is only honoured if it carries a MAC over its contents, keyed by
+a secret this app generates at daemon start and passes in the
+`RUN_COMMAND` arguments. The secret is never written to disk. Unsigned or
+stale jobs are ignored, not run.
+
+- [x] Timing button, measuring the three layers separately
+- [ ] Numbers from the owner's device
+- [ ] Design chosen on the strength of those numbers
+- [ ] Daemon, if the numbers justify one
+
 Exit: a Python script writes a PDF and the app reads it back.
 
 ### Phase 2 — Agent core
