@@ -390,7 +390,11 @@ read anything a stranger wrote.
       source, so a typo in a Kotlin risk string fails in CI, not on the
       phone
 - [x] 145 core tests; 15 mutants, 15 killed
-- [ ] Confirmed on the owner's device
+- [x] Confirmed on the owner's device — `get_battery_status` returned 50%
+      and 36.8°C from the platform API, and `run_python` returned the
+      200th Fibonacci number, computed by CPython inside proot inside
+      Termux under a different Android UID and carried back through the
+      gate. The chain built since Phase 0 now runs end to end.
 
 **Why the approval store was rewritten.** The predecessor kept approvals
 in a dictionary. Android restarts background processes constantly, so
