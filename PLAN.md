@@ -237,6 +237,33 @@ allowed to exist only once this is in place.
 - [x] `approvals.py` — **rewritten, not ported.** See below.
 - [x] 15 tests, all seven mutants killed
 - [x] Core tests run in CI on the runner's Python
+- [x] Confirmed on the owner's device — 2026-10-26: changed action
+      refused, approval survived a restart, second attempt refused
+
+**2c — the gate.** `gate.py` is the only way a tool call can happen:
+
+    known tool? -> arguments valid? -> policy -> approval -> run it
+
+No step is skippable, because there is no other entry point to a
+handler. Three properties come from the predecessor's runtime, lifted
+out of the planner so they can be tested without a model in the loop:
+risk is declared by the tool rather than inferred from model output;
+approval binds to the exact arguments; and taint spreads forward and is
+never cleared, so a sensitive read after an email has been read needs
+confirming even though the owner started the run.
+
+`audit.py` keeps its interface and loses its defect: the JSONL sink
+appended for ever, which on a phone is a storage leak the owner cannot
+explain. It now rotates by size with a fixed number of generations, so
+the footprint has a statable ceiling of `max_bytes x (keep + 1)`. The
+redaction rule is unchanged and deliberate — the caller passes redacted
+fields, because a sink that guesses at secrets will eventually guess
+wrong and write a key to disk.
+
+- [x] `tools.py` gains `ToolRegistry`; the model cannot add to it
+- [x] `gate.py` with 17 tests
+- [x] `audit.py` rotating, with 11 tests
+- [x] 9 mutants, 8 killed, 1 survivor fixed by deleting dead code
 - [ ] Confirmed on the owner's device
 
 **Why the approval store was rewritten.** The predecessor kept approvals
