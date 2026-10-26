@@ -29,6 +29,7 @@ stranger's.
 from __future__ import annotations
 
 import json
+import logging
 
 import time
 from collections.abc import Mapping
@@ -49,6 +50,9 @@ from harness_core.tools import (
 
 class GateStatus(str):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 OK = "ok"
@@ -151,6 +155,26 @@ class ToolGate:
             validated = tool.validate(arguments)
         except SchemaValidationError as error:
             return self._refuse(state, name, "invalid_arguments", str(error))
+
+        # Before the policy, and therefore before the owner is asked
+        # for anything. A call that cannot work should be refused while
+        # it is still free to refuse it: an approval prompt for an
+        # action that then fails anyway trains the owner to approve
+        # without reading, which is the one habit this whole mechanism
+        # cannot survive.
+        if tool.precheck is not None:
+            try:
+                refusal = tool.precheck(validated)
+            except Exception as error:  # noqa: BLE001 - a broken check must not block the tool
+                logger.exception("precheck for %s failed", name)
+                refusal = None
+            if refusal is not None:
+                return self._refuse(
+                    state,
+                    name,
+                    refusal.error_code or "refused_before_approval",
+                    refusal.summary,
+                )
 
         context = state.context()
         verdict = self.policy.evaluate(context, tool, validated)

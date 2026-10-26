@@ -270,3 +270,164 @@ class TestRiskCannotBeTalkedDown:
         )
         assert outcome.status != "ok"
         assert handler.payloads == []
+
+
+class TestRefusingBeforeAsking:
+    """The second bug the owner found on the phone.
+
+    Texting "1-800-FLOWERS" asked for approval, and only after the
+    owner approved it did the tool say it was not a phone number. So
+    did dialling 112, which Android forbids outright. Both prompts were
+    for actions that could never happen.
+
+    That is worse than it sounds. An approval prompt is a request for
+    the owner's attention, and spending it on decisions that do not
+    matter is how a prompt becomes something to tap past. The checks
+    now run before the policy, so an impossible call is refused while
+    refusing is still free.
+    """
+
+    class CheckingTool(FakeNativeTool):
+        def __init__(self, refusal: str | None = None, reply: str = '{"status":"ok","summary":"sent"}'):
+            super().__init__(reply)
+            self.refusal = refusal
+            self.checked: list[str] = []
+
+        def check(self, payload: str):
+            self.checked.append(payload)
+            return self.refusal
+
+    def gate_for(self, tmp_path, registry):
+        from harness_core.gate import RunState
+
+        return (
+            ToolGate(
+                registry,
+                DefaultPolicy("owner"),
+                ApprovalStore(str(tmp_path / "a.sqlite3")),
+                MemoryAuditSink(),
+            ),
+            RunState(run_id="r1", actor_id="owner"),
+        )
+
+    def register_checking(self, registry, handler):
+        return register(
+            registry,
+            handler,
+            name="send_message",
+            risk="external_side_effect",
+            checks_arguments=True,
+        )
+
+    def test_an_impossible_call_never_becomes_an_approval(self, tmp_path):
+        registry = ToolRegistry()
+        handler = self.CheckingTool(
+            refusal=json.dumps(
+                {"status": "error", "summary": "not a phone number", "error_code": "bad_number"}
+            )
+        )
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+
+        outcome = gate.call(state, "send_message", {"city": "1-800-FLOWERS"})
+        assert outcome.status == "error"
+        assert outcome.error_code == "bad_number"
+        assert outcome.approval is None
+        assert handler.payloads == []
+
+    def test_the_refusal_explains_itself(self, tmp_path):
+        registry = ToolRegistry()
+        handler = self.CheckingTool(
+            refusal='{"status":"error","summary":"not a phone number","error_code":"bad_number"}'
+        )
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        assert "not a phone number" in gate.call(state, "send_message", {"city": "x"}).summary
+
+    def test_a_workable_call_still_asks(self, tmp_path):
+        # The control: the check must not be quietly swallowing the
+        # approval step for everything.
+        registry = ToolRegistry()
+        handler = self.CheckingTool(refusal=None)
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+
+        outcome = gate.call(state, "send_message", {"city": "9876543210"})
+        assert outcome.status == "approval_required"
+        assert handler.checked, "the check should have run"
+        assert handler.payloads == []
+
+    def test_the_check_sees_the_arguments(self, tmp_path):
+        registry = ToolRegistry()
+        handler = self.CheckingTool()
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        gate.call(state, "send_message", {"city": "Asansol"})
+        assert json.loads(handler.checked[0])["arguments"] == {"city": "Asansol"}
+
+    def test_a_check_cannot_approve_anything(self, tmp_path):
+        # A tool answering "ok" to the check must not thereby skip the
+        # approval it would otherwise need. The check can only refuse.
+        registry = ToolRegistry()
+        handler = self.CheckingTool(refusal='{"status":"ok","summary":"looks fine"}')
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        assert gate.call(state, "send_message", {"city": "x"}).status == "approval_required"
+
+    def test_a_broken_check_does_not_disable_the_tool(self, tmp_path):
+        # A crash in a convenience feature must not take a working
+        # capability down with it.
+        registry = ToolRegistry()
+
+        class Exploding(self.CheckingTool):
+            def check(self, payload: str):
+                raise RuntimeError("npe")
+
+        handler = Exploding()
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        assert gate.call(state, "send_message", {"city": "x"}).status == "approval_required"
+
+    def test_a_check_returning_nothing_means_nothing_is_wrong(self, tmp_path):
+        registry = ToolRegistry()
+        handler = self.CheckingTool(refusal="")
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        assert gate.call(state, "send_message", {"city": "x"}).status == "approval_required"
+
+    def test_a_tool_that_does_not_opt_in_is_never_asked(self, tmp_path):
+        # The crossing is paid on every proposal, so it is opt-in.
+        registry = ToolRegistry()
+        handler = self.CheckingTool(refusal='{"status":"error","summary":"no"}')
+        register(registry, handler, name="send_message", risk="external_side_effect")
+        gate, state = self.gate_for(tmp_path, registry)
+        assert gate.call(state, "send_message", {"city": "x"}).status == "approval_required"
+        assert handler.checked == []
+
+    def test_bad_arguments_are_still_caught_before_the_check(self, tmp_path):
+        # Order matters: the schema runs first, so a check never sees
+        # arguments that failed validation.
+        registry = ToolRegistry()
+        handler = self.CheckingTool()
+        self.register_checking(registry, handler)
+        gate, state = self.gate_for(tmp_path, registry)
+        outcome = gate.call(state, "send_message", {})
+        assert outcome.status == "error"
+        assert handler.checked == []
+
+    def test_the_bridge_itself_promises_a_check_never_raises(self, tmp_path):
+        # Tested through the spec rather than the gate on purpose. The
+        # gate has its own guard, so going through it would pass even
+        # with this one deleted - the mutation sweep said exactly that.
+        # Each layer has to be worth its place on its own: the bridge's
+        # job is that nothing from Java escapes into the core, and that
+        # is what is checked here.
+        registry = ToolRegistry()
+
+        class Exploding(self.CheckingTool):
+            def check(self, payload: str):
+                raise RuntimeError("a Java exception crossing over")
+
+        spec = self.register_checking(registry, Exploding())
+        assert spec.precheck is not None
+        assert spec.precheck({"city": "x"}) is None

@@ -609,7 +609,47 @@ failing silently at the one moment when silence is worst.
 - [x] 21 JVM tests on number and message handling, including that a
       trunk zero is kept — deciding which zero is a dialling-plan
       prefix is a guess, and a guess here rings somebody
+- [x] **Refuse before asking** — found on the device, see below
 - [ ] Confirmed on the owner's device
+
+**The second bug the owner found: asked to approve the impossible.**
+
+Texting "1-800-FLOWERS" stopped for approval, and only *after* the
+owner approved did the tool say it was not a phone number. Dialling 112
+did the same. Both prompts were for actions that could never happen.
+
+That is worse than it looks. An approval prompt spends the owner's
+attention, and spending it on decisions that do not matter is exactly
+how a prompt becomes something to tap past. The security of every
+irreversible tool in this app rests on the owner actually reading one.
+A prompt that turns out not to have mattered is not a harmless
+annoyance; it is training.
+
+The cause was ordering. Validation lived in the handler, and the
+handler runs last, after the policy and after the owner. A tool can now
+declare a **precheck** — a cheap, side-effect-free look at the
+arguments that runs *before* the policy:
+
+    known tool? → arguments valid? → could this work? → policy →
+    approval → run it
+
+Properties it was given deliberately:
+
+- it can only **refuse**, never allow. A check answering "fine" does
+  not skip an approval that would otherwise be needed, so it cannot
+  become a way to weaken the policy
+- a check that **crashes is ignored**, not treated as a refusal: a
+  broken convenience must not disable a working capability
+- it is **opt-in**, because the crossing into Kotlin is paid on every
+  proposal, including the ones that get denied — and
+  `NativeToolContractTest` refuses to let a tool override `check()`
+  without declaring it, since the two disagreeing is a silent no-op
+- handlers still re-check their own arguments. A handler that relies on
+  having been vetted elsewhere is one refactor away from not being
+
+- [x] 10 bridge tests, 8 mutants, 8 killed — the last survivor was
+      honest redundancy: the gate guards against a crashing check too,
+      so the bridge's own guarantee had to be tested at the bridge
 
 
 Ordered easiest first so the harness is proven before the awkward ones.

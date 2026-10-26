@@ -37,11 +37,27 @@ class SmsTool(private val context: Context) : NativeTool {
         }
     """.trimIndent()
     override val risk = "external_side_effect"
+    override val checksArguments = true
     override val timeoutSeconds = 60.0
+
+    /** Refuse an impossible message before the owner is asked about it. */
+    override fun check(payloadJson: String): String? {
+        val arguments = NativeTool.argumentsOf(payloadJson)
+        (Messaging.number(arguments.optString("to")) as? Messaging.Number.Rejected)?.let {
+            return NativeTool.error(it.summary, it.code)
+        }
+        (Messaging.message(arguments.optString("text")) as? Messaging.Message.Rejected)?.let {
+            return NativeTool.error(it.summary, it.code)
+        }
+        return null
+    }
 
     override fun run(payloadJson: String): String {
         val arguments = NativeTool.argumentsOf(payloadJson)
 
+        // Checked again rather than trusted: the gate is the only
+        // caller today, but a handler that relies on having been
+        // vetted elsewhere is one refactor away from not being.
         val number = when (val parsed = Messaging.number(arguments.optString("to"))) {
             is Messaging.Number.Rejected -> return NativeTool.error(parsed.summary, parsed.code)
             is Messaging.Number.Dialable -> parsed.value

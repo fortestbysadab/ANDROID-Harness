@@ -80,6 +80,23 @@ class NativeToolContractTest {
         assertEquals("tools speak to CodeSandbox, never to Termux", emptyList<String>(), offenders)
     }
 
+    @Test
+    fun `a tool that checks its arguments says so`() {
+        // check() is only called when checksArguments is true, so
+        // overriding one without the other is a silent no-op - the
+        // owner would go back to being asked to approve calls that
+        // cannot work.
+        val mismatched = toolSources().filter { file ->
+            val source = file.readText()
+            CHECKS_OVERRIDE.containsMatchIn(source) != CHECKS_FLAG.containsMatchIn(source)
+        }.map { it.name }
+        assertEquals(
+            "override check() and set checksArguments together, or neither",
+            emptyList<String>(),
+            mismatched,
+        )
+    }
+
     private fun declarations(pattern: Regex): List<Pair<String, String>> =
         toolSources().flatMap { file ->
             pattern.findAll(file.readText()).map { file.name to it.groupValues[1] }
@@ -111,5 +128,7 @@ class NativeToolContractTest {
         val IMPLEMENTS = Regex("""\)\s*:\s*NativeTool\b""")
         val RISK = Regex("""override val risk\s*=\s*"([a-z_]+)"""")
         val DESCRIPTION = Regex("""override val description\s*=\s*\n?\s*"([^"]+)""")
+        val CHECKS_OVERRIDE = Regex("""override fun check\(""")
+        val CHECKS_FLAG = Regex("""override val checksArguments\s*=\s*true""")
     }
 }

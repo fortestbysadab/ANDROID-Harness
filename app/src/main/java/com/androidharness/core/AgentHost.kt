@@ -86,6 +86,9 @@ object AgentHost {
                 Kwarg("timeout_seconds", tool.timeoutSeconds),
                 Kwarg("version", tool.version),
                 Kwarg("returns_untrusted_content", tool.returnsUntrustedContent),
+                // Only tools that override check() pay for the extra
+                // crossing on every proposal.
+                Kwarg("checks_arguments", tool.checksArguments),
             )
         }
     }

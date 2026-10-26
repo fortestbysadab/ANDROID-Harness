@@ -35,6 +35,23 @@ class CallTool(private val context: Context) : NativeTool {
         }
     """.trimIndent()
     override val risk = "external_side_effect"
+    override val checksArguments = true
+
+    /** Refuse an impossible call before the owner is asked about it. */
+    override fun check(payloadJson: String): String? {
+        val raw = NativeTool.argumentsOf(payloadJson).optString("to")
+        (Messaging.number(raw) as? Messaging.Number.Rejected)?.let {
+            return NativeTool.error(it.summary, it.code)
+        }
+        val number = (Messaging.number(raw) as Messaging.Number.Dialable).value
+        if (Messaging.isEmergency(number)) {
+            return NativeTool.error(emergencyAdvice(number), "emergency_number")
+        }
+        return null
+    }
+
+    private fun emergencyAdvice(number: String) =
+        "Android does not allow an app to dial emergency numbers. Dial $number yourself, now."
 
     override fun run(payloadJson: String): String {
         val number = when (
@@ -45,11 +62,7 @@ class CallTool(private val context: Context) : NativeTool {
         }
 
         if (Messaging.isEmergency(number)) {
-            return NativeTool.error(
-                "Android does not allow an app to dial emergency numbers. " +
-                    "Dial $number yourself, now.",
-                "emergency_number",
-            )
+            return NativeTool.error(emergencyAdvice(number), "emergency_number")
         }
 
         val outcome = Permissions.ensure(context, listOf(Manifest.permission.CALL_PHONE))

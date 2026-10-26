@@ -62,6 +62,20 @@ class ToolResult:
 
 ToolHandler = Callable[[ToolContext, Mapping[str, Any]], ToolResult]
 
+#: An optional cheap check, run *before* the policy decides.
+#:
+#: Returns an error to refuse the call, or None to say nothing is
+#: obviously wrong. It exists so that a call which cannot possibly work
+#: is refused before the owner is asked to approve it: being asked to
+#: authorise a text to "1-800-FLOWERS", and only then told it is not a
+#: phone number, teaches the owner that approval prompts are noise.
+#:
+#: It can only ever turn an allowed call into a refusal, never the
+#: reverse, so it is not a security control and cannot weaken one. It
+#: must be free of side effects and must not block: it runs on every
+#: proposal, including ones that will be denied.
+ToolPrecheck = Callable[[Mapping[str, Any]], "ToolResult | None"]
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -70,6 +84,7 @@ class ToolSpec:
     input_schema: Mapping[str, Any]
     risk: Risk
     handler: ToolHandler
+    precheck: ToolPrecheck | None = None
     timeout_seconds: float = 15.0
     version: str = "1"
     idempotent: bool = False

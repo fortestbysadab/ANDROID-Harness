@@ -20,16 +20,22 @@ cannot decide at call time that it is less dangerous than it said.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any, Protocol
 
 from harness_core.tools import Risk, ToolContext, ToolRegistry, ToolResult, ToolSpec
 
 
+logger = logging.getLogger(__name__)
+
+
 class NativeHandler(Protocol):
-    """What Kotlin implements. One method, strings both ways."""
+    """What Kotlin implements. Two methods, strings both ways."""
 
     def run(self, arguments_json: str) -> str: ...
+
+    def check(self, arguments_json: str) -> str | None: ...
 
 
 def register_native_tool(
@@ -43,6 +49,7 @@ def register_native_tool(
     timeout_seconds: float = 15.0,
     version: str = "1",
     returns_untrusted_content: bool = False,
+    checks_arguments: bool = False,
 ) -> ToolSpec:
     """Register a tool whose implementation lives on the Kotlin side.
 
@@ -73,12 +80,33 @@ def register_native_tool(
             )
         return _decode(name, raw)
 
+    def check(arguments: Mapping[str, Any]) -> ToolResult | None:
+        """Ask the native side whether this could possibly work.
+
+        Runs before the policy, so a call that is already doomed never
+        becomes an approval prompt. A check that itself fails is
+        ignored rather than treated as a refusal: a broken check must
+        not be able to disable a working tool.
+        """
+        try:
+            raw = handler.check(json.dumps({"arguments": dict(arguments)}, default=str))
+        except Exception:  # noqa: BLE001 - a Java exception must not escape
+            logger.exception("%s refused to check its arguments", name)
+            return None
+        if raw is None or not str(raw).strip():
+            return None
+        decoded = _decode(name, raw)
+        # Only a refusal means anything here; "ok" is said by staying
+        # quiet, and a check cannot approve anything.
+        return decoded if decoded.status != "ok" else None
+
     spec = ToolSpec(
         name=name,
         description=description,
         input_schema=schema,
         risk=Risk(risk),
         handler=call,
+        precheck=check if checks_arguments else None,
         timeout_seconds=timeout_seconds,
         version=version,
         returns_untrusted_content=returns_untrusted_content,

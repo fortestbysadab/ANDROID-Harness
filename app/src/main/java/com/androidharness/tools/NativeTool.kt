@@ -33,6 +33,35 @@ interface NativeTool {
     val returnsUntrustedContent: Boolean get() = false
 
     /**
+     * True when this tool overrides [check], so the core should call
+     * it. A flag rather than always calling, because the crossing is
+     * paid on every proposal including the ones that get denied.
+     *
+     * Overriding [check] without setting this is a silent no-op, so
+     * `NativeToolContractTest` refuses to let the two disagree.
+     */
+    val checksArguments: Boolean get() = false
+
+    /**
+     * Whether this call could possibly work, asked *before* the policy
+     * decides and therefore before the owner is asked to approve
+     * anything.
+     *
+     * Return null to say nothing is obviously wrong, or an error to
+     * refuse. It exists because being asked to authorise a text to
+     * "1-800-FLOWERS" and only then told it is not a phone number
+     * teaches the owner that approval prompts are noise - and an
+     * owner who approves without reading is worse off than one who
+     * was never asked.
+     *
+     * Must be cheap, free of side effects, and must not touch a
+     * permission: it runs on every proposal, including ones that will
+     * be denied. It can only refuse, never allow, so it is not a
+     * security control.
+     */
+    fun check(payloadJson: String): String? = null
+
+    /**
      * Called from Python, on whichever thread the run is using. Never
      * the main thread.
      *
