@@ -435,8 +435,50 @@ Each is a Kotlin implementation behind a Python-visible `ToolSpec`. These
 replace Termux:API, which was only ever a thin wrapper over the same
 platform APIs.
 
-Clipboard, notifications, battery, TTS, vibration, media, contacts, SMS,
-telephony, location, camera, files.
+They are built in batches, and the batches are not arbitrary: tools are
+grouped by **what it costs to get them wrong**, so that each batch
+introduces exactly one new difficulty. Every batch ends installable and
+pressable, like every phase.
+
+| batch | tools | the new difficulty |
+| --- | --- | --- |
+| **3a** | clipboard read/write, vibrate, speak | none — no runtime prompt. Shakes out registration ergonomics and the main-thread rule while nothing can block. |
+| **3b** | location, contacts, notifications | the runtime permission dance, and `sensitive_read` — these taint a run, so the policy starts making decisions |
+| **3c** | send SMS, place a call | `external_side_effect` — every call stops for an approval bound to the exact recipient and text |
+| **3d** | media, camera, telephony, files | long-running and large results; streaming a result back without exhausting the model's context |
+
+**3a — the ones that cannot say no.**
+
+Three things learned from the docs before writing a line:
+
+- **A clipboard *read* is gated and a write is not.** Since Android 10,
+  `getPrimaryClip()` returns `null` unless the caller is the default
+  keyboard or holds input focus. The system does not throw — it behaves
+  as though the clipboard were empty. That failure mode is the whole
+  trap: an agent that reports "your clipboard is empty" when it was
+  actually refused is lying with confidence. So a denied read returns
+  `clipboard_read_denied` with a remedy, and only a genuinely empty
+  clipboard reports empty.
+- **The clipboard is somebody else's text.** Whatever is in it was not
+  necessarily written by the owner, so `get_clipboard` is a
+  `sensitive_read` *and* declares `returns_untrusted_content` — reading
+  it taints the run.
+- **Android 13 shows a preview of everything copied.** A write marks
+  `EXTRA_IS_SENSITIVE` when asked, so a password the agent puts on the
+  clipboard is not displayed on screen.
+
+Clipboard and speech calls are marshalled to the main thread and waited
+on, because a tool runs on the agent's worker thread and several OEMs
+refuse these APIs off the main looper.
+
+- [x] `get_clipboard`, `set_clipboard`, `vibrate`, `speak`
+- [x] Argument handling split into pure functions so CI can test it
+      without a device — 19 JVM tests
+- [x] A denied clipboard read is distinguishable from an empty one
+- [x] `NativeToolContractTest` counts declarations per tool, not per
+      file; its first version silently ignored the second tool in
+      `ClipboardTools.kt`
+- [ ] Confirmed on the owner's device
 
 Ordered easiest first so the harness is proven before the awkward ones.
 

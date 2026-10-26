@@ -3,8 +3,12 @@ package com.androidharness.core
 import android.content.Context
 import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.tools.BatteryTool
+import com.androidharness.tools.GetClipboardTool
 import com.androidharness.tools.NativeTool
 import com.androidharness.tools.SandboxTool
+import com.androidharness.tools.SetClipboardTool
+import com.androidharness.tools.SpeakTool
+import com.androidharness.tools.VibrateTool
 import com.chaquo.python.Kwarg
 import com.chaquo.python.PyException
 import com.chaquo.python.PyObject
@@ -48,9 +52,14 @@ object AgentHost {
     private fun registerTools(context: Context, agent: PyObject) {
         val bridge = Python.getInstance().getModule("harness_core.bridge")
         val registry = agent.get("registry")
+        val application = context.applicationContext
         val tools: List<NativeTool> = listOf(
-            BatteryTool(context.applicationContext),
-            SandboxTool(TermuxSandbox(context.applicationContext)),
+            BatteryTool(application),
+            GetClipboardTool(application),
+            SetClipboardTool(application),
+            VibrateTool(application),
+            SpeakTool(application),
+            SandboxTool(TermuxSandbox(application)),
         )
         tools.forEach { tool ->
             bridge.callAttr(

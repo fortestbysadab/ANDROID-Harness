@@ -17,6 +17,11 @@ import org.junit.Test
  * So the allowed values are read out of the Python source that defines
  * them. If someone adds a risk level on one side, this fails until both
  * sides agree.
+ *
+ * Counted per tool rather than per file. The first version of this test
+ * looked at one declaration per file and silently ignored the second
+ * tool in `ClipboardTools.kt` - a check that quietly inspects less than
+ * it claims is worse than no check, because it is believed.
  */
 class NativeToolContractTest {
 
@@ -25,9 +30,7 @@ class NativeToolContractTest {
         val known = risksDeclaredInPython()
         assertTrue("could not read the Risk enum from the core", known.size >= 5)
 
-        val declared = toolSources().mapNotNull { file ->
-            RISK.find(file.readText())?.groupValues?.get(1)?.let { file.name to it }
-        }
+        val declared = declarations(RISK)
         assertTrue("no native tools found to check", declared.isNotEmpty())
 
         val unknown = declared.filterNot { (_, risk) -> risk in known }
@@ -39,14 +42,27 @@ class NativeToolContractTest {
     }
 
     @Test
+    fun `every tool declares both a risk and a description`() {
+        // Counted against the number of implementations, so a tool
+        // added to an existing file cannot inherit its neighbour's
+        // declarations by being overlooked.
+        toolSources().forEach { file ->
+            val source = file.readText()
+            val tools = IMPLEMENTS.findAll(source).count()
+            assertEquals("${file.name}: a tool without a risk", tools, RISK.findAll(source).count())
+            assertEquals(
+                "${file.name}: a tool without a description",
+                tools,
+                DESCRIPTION.findAll(source).count(),
+            )
+        }
+    }
+
+    @Test
     fun `every native tool says what it does`() {
         // The description is the only thing the model sees. A tool with
         // a vague one is a tool that gets called at the wrong moment.
-        val vague = toolSources()
-            .mapNotNull { file ->
-                DESCRIPTION.find(file.readText())?.groupValues?.get(1)?.let { file.name to it }
-            }
-            .filter { (_, text) -> text.length < 30 }
+        val vague = declarations(DESCRIPTION).filter { (_, text) -> text.length < 30 }
         assertEquals(
             "these descriptions are too short to guide a model",
             emptyList<Pair<String, String>>(),
@@ -54,16 +70,33 @@ class NativeToolContractTest {
         )
     }
 
+    @Test
+    fun `no tool reaches into Termux except through the sandbox interface`() {
+        // The project's founding rule, restated where tools are written,
+        // because this is the package that will be tempted.
+        val offenders = toolSources()
+            .filter { it.readText().contains("import com.androidharness.termux") }
+            .map { it.name }
+        assertEquals("tools speak to CodeSandbox, never to Termux", emptyList<String>(), offenders)
+    }
+
+    private fun declarations(pattern: Regex): List<Pair<String, String>> =
+        toolSources().flatMap { file ->
+            pattern.findAll(file.readText()).map { file.name to it.groupValues[1] }
+        }
+
     private fun risksDeclaredInPython(): Set<String> {
         val source = resolve("app/src/main/python/harness_core/tools.py")
         val body = source.readText().substringAfter("class Risk(").substringBefore("\n\n\n")
         return Regex("""=\s*"([a-z_]+)"""").findAll(body).map { it.groupValues[1] }.toSet()
     }
 
+    /** Found by what they are, not by an allowlist of what they are not. */
     private fun toolSources(): List<File> =
         resolve("app/src/main/java/com/androidharness/tools")
             .walkTopDown()
-            .filter { it.isFile && it.extension == "kt" && it.name != "NativeTool.kt" }
+            .filter { it.isFile && it.extension == "kt" }
+            .filter { IMPLEMENTS.containsMatchIn(it.readText()) }
             .toList()
 
     /** Gradle runs tests from the module directory; the IDE may not. */
@@ -75,6 +108,7 @@ class NativeToolContractTest {
     }
 
     private companion object {
+        val IMPLEMENTS = Regex("""\)\s*:\s*NativeTool\b""")
         val RISK = Regex("""override val risk\s*=\s*"([a-z_]+)"""")
         val DESCRIPTION = Regex("""override val description\s*=\s*\n?\s*"([^"]+)""")
     }
