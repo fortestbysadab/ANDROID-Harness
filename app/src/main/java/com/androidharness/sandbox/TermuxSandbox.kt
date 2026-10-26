@@ -57,6 +57,18 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
             )
         }
 
+        val rejected = request.expectedOutputs.filterNot(OutputNames::isSafe)
+        if (rejected.isNotEmpty()) {
+            return SandboxOutcome(
+                succeeded = false,
+                stdout = "",
+                stderr = "",
+                errorCode = SandboxErrors.OUTPUT_MISSING,
+                remedy = "These output names are not usable as filenames: " +
+                    rejected.joinToString(", "),
+            )
+        }
+
         val encoded = Base64.encodeToString(
             request.script.toByteArray(Charsets.UTF_8),
             Base64.NO_WRAP,
@@ -78,6 +90,7 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
                 (limits.addressSpaceBytes / 1024).toString(),
                 (limits.fileSizeBytes / 1024).toString(),
                 request.interpreter,
+                OutputNames.encode(request.expectedOutputs),
             ),
             // Give the wrapper room beyond the script's own wall clock, so
             // that a script killed by `timeout` reports as a script
@@ -107,10 +120,13 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
             remedy = "Termux returned nothing.",
         )
 
-        return interpret(result)
+        return interpret(result, request.expectedOutputs)
     }
 
-    private fun interpret(result: CommandResult): SandboxOutcome {
+    private fun interpret(
+        result: CommandResult,
+        expectedOutputs: List<String>,
+    ): SandboxOutcome {
         if (result.blockedByExternalAppsPolicy) {
             return SandboxOutcome(
                 succeeded = false,
@@ -156,11 +172,7 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
         }
 
         if (parsed.status == 0) {
-            return SandboxOutcome(
-                succeeded = true,
-                stdout = parsed.output,
-                stderr = result.stderr,
-            )
+            return collectOutputs(parsed.output, result.stderr, result.stdout, expectedOutputs)
         }
         if (parsed.status == SandboxRunner.EXIT_TIMED_OUT) {
             return SandboxOutcome(
@@ -180,6 +192,83 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
         )
     }
 
+    /**
+     * Reads back whatever the wrapper copied into shared storage.
+     *
+     * The script never had access to this directory; the wrapper put the
+     * declared files there after proot exited. Reading them needs
+     * all-files access, which the owner grants once.
+     */
+    private fun collectOutputs(
+        output: String,
+        stderr: String,
+        rawStdout: String,
+        expectedOutputs: List<String>,
+    ): SandboxOutcome {
+        if (expectedOutputs.isEmpty()) {
+            return SandboxOutcome(succeeded = true, stdout = output, stderr = stderr)
+        }
+
+        val report = WrapperReport.from(rawStdout)
+        if (report.storageUnavailable) {
+            return SandboxOutcome(
+                succeeded = false,
+                stdout = output,
+                stderr = stderr,
+                errorCode = SandboxErrors.OUTPUT_MISSING,
+                remedy = "Termux cannot reach shared storage. Run " +
+                    "`termux-setup-storage` in Termux and grant the " +
+                    "permission it asks for.",
+            )
+        }
+
+        val directory = report.outputDirectory
+        if (directory == null) {
+            return SandboxOutcome(
+                succeeded = false,
+                stdout = output,
+                stderr = stderr,
+                errorCode = SandboxErrors.OUTPUT_MISSING,
+                remedy = "The sandbox produced none of the expected files.",
+            )
+        }
+
+        if (!SharedStorage.readable()) {
+            return SandboxOutcome(
+                succeeded = false,
+                stdout = output,
+                stderr = stderr,
+                errorCode = SandboxErrors.OUTPUT_MISSING,
+                remedy = SharedStorage.REMEDY,
+            )
+        }
+
+        val collected = LinkedHashMap<String, ByteArray>()
+        val missing = mutableListOf<String>()
+        expectedOutputs.forEach { name ->
+            val bytes = SharedStorage.read(directory, name)
+            if (bytes == null) missing.add(name) else collected[name] = bytes
+        }
+
+        if (missing.isNotEmpty()) {
+            return SandboxOutcome(
+                succeeded = false,
+                stdout = output,
+                stderr = stderr,
+                outputs = collected,
+                errorCode = SandboxErrors.OUTPUT_MISSING,
+                remedy = "The script did not produce: ${missing.joinToString(", ")}",
+            )
+        }
+
+        return SandboxOutcome(
+            succeeded = true,
+            stdout = output,
+            stderr = stderr,
+            outputs = collected,
+        )
+    }
+
     private fun wrapperRemedy(exitCode: Int?): String = when (exitCode) {
         SandboxRunner.EXIT_PROOT_MISSING ->
             "proot is not installed in Termux. Run: pkg install proot"
@@ -192,23 +281,5 @@ class TermuxSandbox(private val context: Context) : CodeSandbox {
 
     private companion object {
         const val TAG = "TermuxSandbox"
-    }
-}
-
-/** The script's own exit status, separated from the wrapper's output. */
-internal data class ScriptExit(val output: String, val status: Int) {
-    companion object {
-        fun from(stdout: String): ScriptExit? {
-            val marker = SandboxRunner.EXIT_MARKER
-            // Last occurrence: a script that printed the marker itself
-            // must not be able to fake its own exit status.
-            val index = stdout.lastIndexOf(marker)
-            if (index < 0) return null
-            val status = stdout.substring(index + marker.length)
-                .trim()
-                .takeWhile { it.isDigit() }
-                .toIntOrNull() ?: return null
-            return ScriptExit(stdout.substring(0, index).trimEnd('\n'), status)
-        }
     }
 }

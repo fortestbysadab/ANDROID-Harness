@@ -13,6 +13,16 @@
         <package android:name="com.termux" />
     </queries>
 
+    <!-- Needed to read the files Termux copies into shared storage. The
+         two alternatives do not work here: a folder picked through the
+         document picker yields a content URI that cannot be mapped to the
+         POSIX path Termux writes to, and returning bytes through stdout is
+         bounded by Binder's transaction limit. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <application
         android:allowBackup="false"
         android:label="@string/app_name"

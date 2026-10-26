@@ -2,6 +2,7 @@ package com.androidharness.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.ViewGroup
@@ -11,14 +12,15 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import com.androidharness.sandbox.SandboxLimits
+import com.androidharness.sandbox.SandboxOutcome
+import com.androidharness.sandbox.SandboxRequest
+import com.androidharness.sandbox.SharedStorage
+import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.termux.CommandResult
 import com.androidharness.termux.TermuxBridge
 import com.androidharness.termux.TermuxConstants
 import com.androidharness.termux.TermuxReadiness
-import com.androidharness.sandbox.SandboxLimits
-import com.androidharness.sandbox.SandboxOutcome
-import com.androidharness.sandbox.SandboxRequest
-import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.termux.TermuxStatus
 import java.util.concurrent.Executors
 
@@ -35,6 +37,7 @@ class DiagnosticsActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var remedyView: TextView
     private lateinit var outputView: TextView
+    private lateinit var storageView: TextView
     private lateinit var permissionButton: Button
     private val sandbox by lazy { TermuxSandbox(applicationContext) }
     private val worker = Executors.newSingleThreadExecutor()
@@ -125,6 +128,21 @@ class DiagnosticsActivity : AppCompatActivity() {
             },
         )
 
+        storageView = body("")
+        root.addView(storageView)
+        root.addView(
+            Button(this).apply {
+                text = "Grant all-files access"
+                setOnClickListener { requestAllFilesAccess() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Write a file in the sandbox and read it back"
+                setOnClickListener { runFileRoundTrip() }
+            },
+        )
+
         outputView = body("Nothing run yet.").apply {
             typeface = android.graphics.Typeface.MONOSPACE
             setTextIsSelectable(true)
@@ -153,6 +171,12 @@ class DiagnosticsActivity : AppCompatActivity() {
         remedyView.text = state.remedy
         permissionButton.isEnabled =
             state.readiness == TermuxReadiness.PERMISSION_NOT_GRANTED
+        storageView.text = if (SharedStorage.readable()) {
+            "All-files access: granted. Files written by the sandbox can be read back."
+        } else {
+            "All-files access: not granted. The sandbox can run, but files it " +
+                "produces cannot be read back."
+        }
     }
 
     private fun requestRunCommandPermission() {
@@ -234,6 +258,50 @@ class DiagnosticsActivity : AppCompatActivity() {
         runInSandbox("python", script)
     }
 
+    private fun runFileRoundTrip() {
+        val script = """
+            # A PDF is the real target, but a plain file proves the path
+            # without pulling in a library. The script writes into its own
+            # workspace; it cannot see shared storage at all. The wrapper
+            # copies the declared file out afterwards.
+            with open("report.txt", "w") as handle:
+                handle.write("written inside the sandbox\n")
+                for index in range(5):
+                    handle.write(f"line {index}\n")
+            print("script wrote report.txt")
+        """.trimIndent()
+
+        outputView.text = "Running in the sandbox…"
+        worker.execute {
+            val outcome = sandbox.run(
+                SandboxRequest(
+                    script = script,
+                    interpreter = "python",
+                    expectedOutputs = listOf("report.txt"),
+                ),
+                SandboxLimits(),
+            )
+            runOnUiThread { showSandbox(outcome) }
+        }
+    }
+
+    private fun requestAllFilesAccess() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE),
+                REQUEST_STORAGE,
+            )
+            return
+        }
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.fromParts("package", packageName, null),
+            ),
+        )
+    }
+
     private fun runInSandbox(interpreter: String, script: String) {
         outputView.text = "Running in the sandbox…"
         // The sandbox call blocks, and the result is delivered on the main
@@ -252,6 +320,13 @@ class DiagnosticsActivity : AppCompatActivity() {
             append("[sandbox]\n")
             if (outcome.stdout.isNotEmpty()) append("stdout:\n${outcome.stdout}\n")
             if (outcome.stderr.isNotEmpty()) append("stderr:\n${outcome.stderr}\n")
+            if (outcome.outputs.isNotEmpty()) {
+                outcome.outputs.forEach { (name, bytes) ->
+                    append("file: ${'$'}name (${'$'}{bytes.size} bytes)\n")
+                    append(bytes.decodeToString().prependIndent("  "))
+                    append("\n")
+                }
+            }
             if (outcome.errorCode.isNotEmpty()) append("error: ${outcome.errorCode}\n")
             if (outcome.remedy.isNotEmpty()) append("remedy: ${outcome.remedy}\n")
             append("\nverdict: ${if (outcome.succeeded) "SANDBOX WORKS" else "failed"}")
@@ -305,5 +380,6 @@ class DiagnosticsActivity : AppCompatActivity() {
 
     private companion object {
         const val REQUEST_RUN_COMMAND = 1
+        const val REQUEST_STORAGE = 2
     }
 }

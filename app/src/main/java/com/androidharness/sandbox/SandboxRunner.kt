@@ -8,6 +8,16 @@ package com.androidharness.sandbox
  * different Android users, which is the whole reason the sandbox lives
  * there. The script is passed base64-encoded as an argument so that no
  * quoting of model-written code is ever performed.
+ *
+ * ## How files get out
+ *
+ * The sandboxed script cannot reach shared storage - `/sdcard` and
+ * `/storage` are empty directories from inside proot. Instead the
+ * **wrapper**, which runs outside proot after the script has exited,
+ * copies out only the filenames the caller declared in advance.
+ *
+ * That makes egress mediated rather than ambient: a script cannot decide
+ * for itself to write something into the owner's photo library.
  */
 object SandboxRunner {
 
@@ -20,6 +30,18 @@ object SandboxRunner {
      */
     const val EXIT_MARKER = "__HARNESS_EXIT__"
 
+    /**
+     * Metadata lines, emitted **after** the exit marker.
+     *
+     * Position matters. Parsing takes everything before the *last* exit
+     * marker as script output, so anything the wrapper prints afterwards
+     * cannot be forged by the script: the script's own output is always
+     * earlier in the stream.
+     */
+    const val OUTPUT_MARKER = "__HARNESS_OUTPUT__"
+    const val OUTPUT_DIR_MARKER = "__HARNESS_OUTDIR__"
+    const val NO_STORAGE_MARKER = "__HARNESS_NO_STORAGE__"
+
     /** Wrapper failures, kept well away from ordinary script exit codes. */
     const val EXIT_WORKSPACE_FAILED = 90
     const val EXIT_DECODE_FAILED = 91
@@ -27,6 +49,9 @@ object SandboxRunner {
 
     /** `timeout` reports a killed process this way. */
     const val EXIT_TIMED_OUT = 124
+
+    /** Where the wrapper copies declared outputs, visible to both sides. */
+    const val SHARED_ROOT = "/storage/emulated/0/AndroidHarness/runs"
 
     val SCRIPT: String = """
         set -u
@@ -36,6 +61,7 @@ object SandboxRunner {
         AS_KB="${'$'}4"
         FSIZE_KB="${'$'}5"
         INTERP="${'$'}6"
+        OUTPUTS="${'$'}7"
 
         PREFIX=/data/data/com.termux/files/usr
 
@@ -72,7 +98,36 @@ object SandboxRunner {
             "${'$'}INTERP" "${'$'}WORK/script.py"
         STATUS=${'$'}?
 
+        # Everything below is wrapper territory, outside proot, and is
+        # printed after the exit marker so a script cannot forge it.
         echo "$EXIT_MARKER ${'$'}STATUS"
+
+        if [ "${'$'}STATUS" = "0" ] && [ -n "${'$'}OUTPUTS" ]; then
+            OUT_DIR="$SHARED_ROOT/${'$'}RUN_ID"
+            if mkdir -p "${'$'}OUT_DIR" 2>/dev/null; then
+                COPIED=0
+                for NAME in ${'$'}OUTPUTS; do
+                    if [ -f "${'$'}WORK/${'$'}NAME" ]; then
+                        if cp "${'$'}WORK/${'$'}NAME" "${'$'}OUT_DIR/${'$'}NAME" 2>/dev/null; then
+                            echo "$OUTPUT_MARKER ${'$'}NAME"
+                            COPIED=1
+                        fi
+                    fi
+                done
+                if [ "${'$'}COPIED" = "1" ]; then
+                    echo "$OUTPUT_DIR_MARKER ${'$'}OUT_DIR"
+                else
+                    # Leave nothing behind in the owner's storage for a run
+                    # that produced nothing.
+                    rmdir "${'$'}OUT_DIR" 2>/dev/null || true
+                fi
+            else
+                # Termux has not been granted storage access, so there is
+                # nowhere both sides can see.
+                echo "$NO_STORAGE_MARKER"
+            fi
+        fi
+
         exit 0
     """.trimIndent()
 }

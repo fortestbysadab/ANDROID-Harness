@@ -114,17 +114,51 @@ sandboxed execution work at all" and much fiddlier.
 - [x] An isolation check that is itself the proof: the script tries to
       read the owner's files and Termux's home and must find nothing
 - [x] `ImportRuleTest` — Termux creep is now a failing test, not a habit
-- [ ] Confirmed on the owner's device
+- [x] Confirmed on the owner's device — 2026-10-26, realme RMP2402:
+      Python 3.14.6 ran in the sandbox; `home: empty`, `sdcard: empty`,
+      `storage: empty`, `workspace writable: True`
 
 Exit: Python runs under proot, and the isolation check reports everything
-blocked or empty.
+blocked or empty. **Met.**
 
 **1b — getting files back out**
 
 Output currently returns as stdout, which is bounded by Binder's
-transaction limit and cannot carry a PDF. Options, undecided: shared
-storage with All-files access, a folder chosen once through SAF, or
-chunked base64. Decide with a spike, not in advance.
+transaction limit and cannot carry a PDF.
+
+**Decided: shared storage with all-files access.** The three candidates
+were shared storage, a folder chosen once through SAF, and chunked
+base64. SAF hands back a content URI, and Termux writes to a POSIX path,
+so there is no way to point one at the other. Chunking inherits the exact
+limit it was meant to escape. Shared storage also happens to be where the
+owner wants finished documents anyway — a PDF only visible inside this
+app is not much of a document — so it was going to be written there
+regardless of how it travelled.
+
+Rejected on evidence: `/sdcard/Android/data/com.androidharness/files/`
+would have avoided the broad permission, but Android 11+ blocks cross-app
+access to `/Android/data`, so Termux cannot write there at all. Plain
+MediaStore reads are out too: a PDF is not covered by `READ_MEDIA_*`.
+
+Egress stays mediated. The script never sees shared storage — `/sdcard`
+and `/storage` are still empty directories inside proot. The wrapper
+copies out only the filenames the caller declared in advance, *after*
+proot exits, and prints its report after the exit marker where a script
+cannot forge it. A run that produces nothing leaves no directory behind.
+
+- [x] Wrapper copies declared outputs to `/storage/emulated/0/AndroidHarness/runs/<run id>`
+- [x] `WrapperReport` parses the post-exit-marker metadata; forged lines ignored
+- [x] `OutputNames` refuses anything that could traverse or split the shell loop
+- [x] `SharedStorage` reads the files back, re-checking the path it was handed
+- [x] All-files access requested honestly, with a button and a status line
+- [x] Unit tests, including the forgery attempts
+- [x] Wrapper exercised end to end on Linux against a stand-in `proot`
+- [ ] Confirmed on the owner's device
+
+Exit: a Python script writes a file in the sandbox and the app reads it
+back. Needs **all-files access** granted to this app, and
+**`termux-setup-storage`** run once in Termux — without it the wrapper
+reports `__HARNESS_NO_STORAGE__` and the app says so.
 
 **1c — a resident daemon**
 
