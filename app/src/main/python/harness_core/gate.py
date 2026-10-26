@@ -28,6 +28,8 @@ stranger's.
 
 from __future__ import annotations
 
+import json
+
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -88,6 +90,33 @@ class GateOutcome:
     @property
     def ran(self) -> bool:
         return self.result is not None
+
+
+def describe_action(tool: str, arguments: Mapping[str, Any], *, limit: int = 300) -> str:
+    """Spell out the exact action, for a human to read before saying yes.
+
+    An approval is bound to a hash of these arguments, which makes it
+    impossible to *substitute* the action - but only if the owner knows
+    what they are agreeing to. "Approve send_sms?" is not consent; it is
+    a button. The recipient and the message have to be on screen.
+
+    Long values are cut, because an approval dialog that has to be
+    scrolled is one that gets approved unread.
+    """
+    if not arguments:
+        return f"{tool} (no arguments)"
+    lines = [f"{tool}:"]
+    for key in sorted(arguments):
+        value = arguments[key]
+        if isinstance(value, str):
+            shown = value
+        else:
+            shown = json.dumps(value, default=str, sort_keys=True)
+        shown = " ".join(shown.split())
+        if len(shown) > limit:
+            shown = shown[:limit] + f"… (+{len(shown) - limit} more characters)"
+        lines.append(f"  {key}: {shown}")
+    return "\n".join(lines)
 
 
 class ToolGate:
@@ -151,7 +180,7 @@ class ToolGate:
                     tool=name,
                     tool_version=tool.version,
                     arguments=validated,
-                    reason=verdict.reason,
+                    reason=verdict.reason + "\n\n" + describe_action(name, validated),
                 )
                 self.audit.emit(
                     "approval_requested",

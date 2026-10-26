@@ -564,6 +564,51 @@ today, but a conditional that is wrong for one input is wrong.
 
 - [x] 9 tests for the conversation-wide behaviour, 10 for the store,
       and 8 mutants, 8 killed
+- [x] **Confirmed on the owner's device** — a tainted conversation now
+      stops the next sensitive read, the approval can be answered, and a
+      new conversation starts clean
+
+**3c — the two that cannot be taken back.**
+
+Everything built so far can be undone, retried or ignored. A sent
+message is sent, and a call that connects has already been answered by
+a person. These are the tools the approval machinery was written for,
+two phases before either of them existed.
+
+Both are `external_side_effect`, so `DefaultPolicy` stops every call
+and binds the approval to a hash of the exact arguments — approving
+"tell Rafi I am late" cannot become "tell everyone". `UnattendedPolicy`
+turns that into a flat denial: a scheduled job deciding to message
+somebody at three in the morning, with nobody to check it, is not a
+feature.
+
+**The gap found before writing either tool.** The approval carried only
+the policy's generic sentence, so the dialog would have read "Approve
+send_sms?" with no recipient and no message. The hash makes
+substituting the action impossible, which is worth nothing if the owner
+cannot see what they are agreeing to. Approvals now spell out the exact
+action, one line per argument, with long values cut and the cut
+announced — a dialog that has to be scrolled is one that gets approved
+unread. The structure is itself a security property: a message laid out
+to look like another argument must not be able to impersonate one, and
+there is a test holding that line.
+
+**Numbers are refused, never repaired.** "1-800-FLOWERS" is a wrong
+number as far as this app is concerned. Spaces, brackets and dashes are
+removed because that is how people write numbers down; letters are not,
+because a number the model half-invented must fail here rather than
+make a stranger's phone ring. The refusal tells the model to look the
+contact up instead of guessing.
+
+**Emergency numbers are refused deliberately.** Android will not let an
+app dial them anyway, and failing with "dial 112 yourself, now" beats
+failing silently at the one moment when silence is worst.
+
+- [x] `send_sms`, `place_call`
+- [x] Approvals state the exact action; 7 tests, 5 mutants, 5 killed
+- [x] 20 JVM tests on number and message handling
+- [ ] Confirmed on the owner's device
+
 
 Ordered easiest first so the harness is proven before the awkward ones.
 

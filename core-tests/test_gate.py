@@ -8,7 +8,15 @@ import pytest
 
 from harness_core.approvals import ApprovalStore
 from harness_core.audit import MemoryAuditSink
-from harness_core.gate import APPROVAL_REQUIRED, DENIED, ERROR, OK, RunState, ToolGate
+from harness_core.gate import (
+    APPROVAL_REQUIRED,
+    DENIED,
+    ERROR,
+    OK,
+    RunState,
+    ToolGate,
+    describe_action,
+)
 from harness_core.policy import DefaultPolicy, UnattendedPolicy
 from harness_core.tools import Risk, ToolRegistry, ToolResult, ToolSpec
 
@@ -246,3 +254,87 @@ class TestTheAuditTrail:
         wipe = tool("wipe_device", Risk.CRITICAL)
         build([wipe], approvals, audit).call(state(), "wipe_device", {"text": "x"})
         assert audit.events[0]["rule"] == "deny-critical"
+
+
+class TestTheApprovalSaysWhatItIs:
+    """An approval is bound to a hash. The owner is not.
+
+    The binding makes substituting the action impossible, which is
+    worth nothing if the dialog says only "Approve send_sms?". Consent
+    needs the recipient and the message on screen.
+    """
+
+    def test_the_action_is_spelled_out(self):
+        text = describe_action("send_sms", {"to": "+919876543210", "text": "running late"})
+        assert "+919876543210" in text
+        assert "running late" in text
+
+    def test_arguments_are_in_a_stable_order(self):
+        # The same action must read the same way every time, or a
+        # reordered dialog looks like a different request.
+        first = describe_action("send_sms", {"to": "+91", "text": "hi"})
+        second = describe_action("send_sms", {"text": "hi", "to": "+91"})
+        assert first == second
+
+    def test_a_long_message_is_cut_and_says_so(self):
+        # A dialog that has to be scrolled is one that gets approved
+        # unread.
+        text = describe_action("send_sms", {"text": "a" * 900}, limit=100)
+        assert "more characters" in text
+        assert len(text) < 300
+
+    def test_newlines_cannot_fake_extra_fields(self):
+        # A message laid out to look like another argument must not be
+        # able to impersonate one. The dialog is the owner's only view
+        # of what they are agreeing to, so its structure is a security
+        # property: one line per argument, and the model does not get
+        # to add lines.
+        text = describe_action(
+            "send_sms",
+            {"to": "+919876543210", "text": "hello\n  to: +910000000000"},
+        )
+        lines = text.splitlines()
+        assert len(lines) == 3, text
+        assert lines[0] == "send_sms:"
+        # Exactly one line per argument, each one introduced by us.
+        assert sorted(line.split(":")[0] for line in lines[1:]) == ["  text", "  to"]
+
+    def test_a_tool_with_no_arguments_still_reads_sensibly(self):
+        assert describe_action("get_battery_status", {}) == "get_battery_status (no arguments)"
+
+    def test_structured_arguments_are_rendered_not_dropped(self):
+        text = describe_action("run_python", {"expected_outputs": ["a.csv", "b.csv"]})
+        assert "a.csv" in text and "b.csv" in text
+
+    def test_the_approval_reason_carries_the_action(self, tmp_path):
+        # End to end: what the store hands back is what a screen shows.
+        registry = ToolRegistry()
+        sent = []
+        registry.register(
+            ToolSpec(
+                name="send_sms",
+                description="Send a text message.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"to": {"type": "string"}, "text": {"type": "string"}},
+                    "required": ["to", "text"],
+                },
+                risk=Risk.EXTERNAL_SIDE_EFFECT,
+                handler=lambda context, arguments: sent.append(arguments) or ToolResult.ok("sent"),
+            )
+        )
+        gate = ToolGate(
+            registry,
+            DefaultPolicy("owner"),
+            ApprovalStore(str(tmp_path / "a.sqlite3")),
+            MemoryAuditSink(),
+        )
+        outcome = gate.call(
+            RunState(run_id="r1", actor_id="owner"),
+            "send_sms",
+            {"to": "+919876543210", "text": "running late"},
+        )
+        assert outcome.status == "approval_required"
+        assert "+919876543210" in outcome.approval.reason
+        assert "running late" in outcome.approval.reason
+        assert sent == []

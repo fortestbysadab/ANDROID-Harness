@@ -25,6 +25,13 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
+    <!-- Batch 3c. These two are the only permissions in the app that buy
+         something the owner cannot take back, which is why every call
+         that uses them stops for an approval bound to the exact
+         recipient. -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
     <queries>
         <package android:name="com.termux" />
     </queries>

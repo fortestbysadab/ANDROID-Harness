@@ -3,6 +3,7 @@ package com.androidharness.core
 import android.content.Context
 import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.tools.BatteryTool
+import com.androidharness.tools.CallTool
 import com.androidharness.tools.ContactsTool
 import com.androidharness.tools.GetClipboardTool
 import com.androidharness.tools.LocationTool
@@ -10,6 +11,7 @@ import com.androidharness.tools.NotificationsTool
 import com.androidharness.tools.NativeTool
 import com.androidharness.tools.SandboxTool
 import com.androidharness.tools.SetClipboardTool
+import com.androidharness.tools.SmsTool
 import com.androidharness.tools.SpeakTool
 import com.androidharness.tools.VibrateTool
 import com.chaquo.python.Kwarg
@@ -65,6 +67,8 @@ object AgentHost {
             LocationTool(application),
             ContactsTool(application),
             NotificationsTool(application),
+            SmsTool(application),
+            CallTool(application),
             SandboxTool(TermuxSandbox(application)),
         )
         tools.forEach { tool ->
