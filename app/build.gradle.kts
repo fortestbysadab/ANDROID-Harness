@@ -48,4 +48,15 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     testImplementation("junit:junit:4.13.2")
+
+    // android.jar on the unit-test classpath is a stub: every method in
+    // it throws "Stub!". That is fine for classes a JVM test has no
+    // business touching, but org.json is pure data handling and the
+    // tools use it as their boundary format. This puts a real
+    // implementation in front of the stub.
+    //
+    // Android's JSONObject is a fork of this library, not this library,
+    // so these tests check our logic rather than the platform's exact
+    // coercions - the device confirms the rest.
+    testImplementation("org.json:json:20240303")
 }
