@@ -15,7 +15,12 @@ import com.androidharness.termux.CommandResult
 import com.androidharness.termux.TermuxBridge
 import com.androidharness.termux.TermuxConstants
 import com.androidharness.termux.TermuxReadiness
+import com.androidharness.sandbox.SandboxLimits
+import com.androidharness.sandbox.SandboxOutcome
+import com.androidharness.sandbox.SandboxRequest
+import com.androidharness.sandbox.TermuxSandbox
 import com.androidharness.termux.TermuxStatus
+import java.util.concurrent.Executors
 
 /**
  * Phase 0: prove the round trip.
@@ -31,6 +36,8 @@ class DiagnosticsActivity : AppCompatActivity() {
     private lateinit var remedyView: TextView
     private lateinit var outputView: TextView
     private lateinit var permissionButton: Button
+    private val sandbox by lazy { TermuxSandbox(applicationContext) }
+    private val worker = Executors.newSingleThreadExecutor()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -94,6 +101,27 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "Report the Termux environment"
                 setOnClickListener { runEnvironmentReport() }
+            },
+        )
+
+        root.addView(heading("Sandbox"))
+        root.addView(
+            body(
+                "Runs Python under proot. The isolation check is the real " +
+                    "test: the script tries to reach the owner's files and " +
+                    "Termux's own home, and must find nothing.",
+            ),
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Run Python in the sandbox"
+                setOnClickListener { runSandboxHello() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "Prove the isolation"
+                setOnClickListener { runIsolationCheck() }
             },
         )
 
@@ -170,6 +198,66 @@ class DiagnosticsActivity : AppCompatActivity() {
         ) { result -> show("environment", result) }
     }
 
+    private fun runSandboxHello() {
+        val script = """
+            import sys, os
+            print("python", sys.version.split()[0])
+            print("cwd", os.getcwd())
+            print("sandbox hello")
+        """.trimIndent()
+        runInSandbox("python", script)
+    }
+
+    private fun runIsolationCheck() {
+        // Each line is a thing the script must NOT be able to see. The
+        // owner's media, and Termux's home, which is where the predecessor
+        // kept its API keys.
+        val script = """
+            import os
+
+            def report(label, path):
+                try:
+                    entries = os.listdir(path)
+                except Exception as error:
+                    print(f"{label}: blocked ({type(error).__name__})")
+                    return
+                if entries:
+                    print(f"{label}: VISIBLE - {len(entries)} entries - LEAK")
+                else:
+                    print(f"{label}: empty")
+
+            report("home", os.path.expanduser("~"))
+            report("sdcard", "/sdcard")
+            report("storage", "/storage")
+            print("workspace writable:", os.access(os.getcwd(), os.W_OK))
+        """.trimIndent()
+        runInSandbox("python", script)
+    }
+
+    private fun runInSandbox(interpreter: String, script: String) {
+        outputView.text = "Running in the sandbox…"
+        // The sandbox call blocks, and the result is delivered on the main
+        // thread, so running it there would deadlock until the timeout.
+        worker.execute {
+            val outcome = sandbox.run(
+                SandboxRequest(script = script, interpreter = interpreter),
+                SandboxLimits(),
+            )
+            runOnUiThread { showSandbox(outcome) }
+        }
+    }
+
+    private fun showSandbox(outcome: SandboxOutcome) {
+        outputView.text = buildString {
+            append("[sandbox]\n")
+            if (outcome.stdout.isNotEmpty()) append("stdout:\n${outcome.stdout}\n")
+            if (outcome.stderr.isNotEmpty()) append("stderr:\n${outcome.stderr}\n")
+            if (outcome.errorCode.isNotEmpty()) append("error: ${outcome.errorCode}\n")
+            if (outcome.remedy.isNotEmpty()) append("remedy: ${outcome.remedy}\n")
+            append("\nverdict: ${if (outcome.succeeded) "SANDBOX WORKS" else "failed"}")
+        }
+    }
+
     private fun show(label: String, result: CommandResult) {
         val report = buildString {
             append("[$label]\n")
@@ -208,6 +296,11 @@ class DiagnosticsActivity : AppCompatActivity() {
         this.text = text
         textSize = 15f
         setPadding(0, 4, 0, 8)
+    }
+
+    override fun onDestroy() {
+        worker.shutdownNow()
+        super.onDestroy()
     }
 
     private companion object {

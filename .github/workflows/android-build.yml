@@ -47,6 +47,9 @@ jobs:
       - name: Generate the Gradle wrapper
         run: gradle wrapper --gradle-version 8.7
 
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       - name: Build the debug APK
         run: ./gradlew --no-daemon assembleDebug
 

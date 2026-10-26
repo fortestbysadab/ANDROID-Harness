@@ -84,7 +84,7 @@ the document tools can reach it.
 Each phase ends with something installable that works. No phase depends on
 a later one being finished.
 
-### Phase 0 — Prove the round trip ← **in progress**
+### Phase 0 — Prove the round trip ✅
 
 The only question that matters right now: *can this app get a command run
 in Termux and the output back?* If not, the architecture changes today
@@ -95,23 +95,43 @@ rather than in two months.
 - [x] `TermuxStatus` — distinguish *not installed* / *permission ungranted*
       / *`allow-external-apps` off* / *wrong build*, each with its remedy
 - [x] A diagnostics screen that runs `echo` and shows exactly what came back
-- [ ] **Confirmed working on the owner's device**
+- [x] **Confirmed working on the owner's device** — 2026-10-26.
+      `ROUND TRIP WORKS`; `python`, `proot` and `aarch64` all reported.
 
-Exit: a screenshot of stdout coming back from Termux.
+Exit: a screenshot of stdout coming back from Termux. **Done.**
 
 ### Phase 1 — The sandbox capability
 
-- `CodeSandbox` interface: `available()`, `run(script, limits)`,
-  `collect(outputs)`
-- `TermuxSandbox` — the first implementation: `proot`, rlimits, workspace
-  per run, cleared between runs
-- `NullSandbox` — the honest "unavailable" provider
-- A long-lived Termux-side daemon, started once via `RUN_COMMAND`, so a
-  document does not pay process-spawn cost per run
-- Named failure codes with remedies, in the predecessor's style:
-  `sandbox_unavailable`, `sandbox_timeout`, `sandbox_denied`
+Split, because the file-handoff question is separable from "does
+sandboxed execution work at all" and much fiddlier.
 
-Exit: a Python script runs in Termux, writes a PDF, the app reads it back.
+**1a — execution** ← **built, awaiting device confirmation**
+
+- [x] `CodeSandbox` interface, defined before any implementation
+- [x] `TermuxSandbox`: `proot`, rlimits, fresh workspace per run
+- [x] Named failure codes with remedies — `sandbox_unavailable`,
+      `sandbox_denied`, `sandbox_timeout`, `sandbox_script_failed`
+- [x] An isolation check that is itself the proof: the script tries to
+      read the owner's files and Termux's home and must find nothing
+- [x] `ImportRuleTest` — Termux creep is now a failing test, not a habit
+- [ ] Confirmed on the owner's device
+
+Exit: Python runs under proot, and the isolation check reports everything
+blocked or empty.
+
+**1b — getting files back out**
+
+Output currently returns as stdout, which is bounded by Binder's
+transaction limit and cannot carry a PDF. Options, undecided: shared
+storage with All-files access, a folder chosen once through SAF, or
+chunked base64. Decide with a spike, not in advance.
+
+**1c — a resident daemon**
+
+Started once via `RUN_COMMAND`, so a document does not pay process-spawn
+cost per run.
+
+Exit: a Python script writes a PDF and the app reads it back.
 
 ### Phase 2 — Agent core
 
