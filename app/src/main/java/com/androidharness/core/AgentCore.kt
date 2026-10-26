@@ -35,6 +35,10 @@ object AgentCore {
      * Safe to call repeatedly; the interpreter can only be started once
      * per process, and a second attempt would throw.
      */
+    fun start(context: Context) {
+        ensureStarted(context)
+    }
+
     private fun ensureStarted(context: Context): Long {
         if (Python.isStarted()) return startupMillis
         synchronized(this) {
@@ -64,7 +68,7 @@ object AgentCore {
                 .map { it.toString() }
             Result.success(names)
         } catch (failure: PyException) {
-            Result.failure(IllegalStateException(describe(failure), failure))
+            Result.failure(IllegalStateException(explain(failure), failure))
         }
     }
 
@@ -83,7 +87,7 @@ object AgentCore {
                 .toString()
             Result.success(reply)
         } catch (failure: PyException) {
-            Result.failure(IllegalStateException(describe(failure), failure))
+            Result.failure(IllegalStateException(explain(failure), failure))
         }
     }
 
@@ -93,7 +97,7 @@ object AgentCore {
      * The planner raises errors that already carry an owner-facing
      * remedy; burying that under forty lines of stack would waste it.
      */
-    private fun describe(failure: PyException): String {
+    fun explain(failure: PyException): String {
         val message = failure.message.orEmpty()
         val lastLine = message.trim().lines().lastOrNull().orEmpty()
         return lastLine.substringAfter("Error: ", lastLine).ifBlank { message.take(400) }

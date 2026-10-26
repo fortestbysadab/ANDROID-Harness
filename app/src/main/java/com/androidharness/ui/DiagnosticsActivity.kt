@@ -17,6 +17,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import com.androidharness.core.AgentCore
+import com.androidharness.core.AgentHost
 import com.androidharness.core.ProviderSettings
 import com.androidharness.sandbox.SandboxLimits
 import com.androidharness.sandbox.SandboxOutcome
@@ -31,6 +32,7 @@ import com.androidharness.termux.TermuxStatus
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 
 /**
  * Phase 0: prove the round trip.
@@ -49,6 +51,7 @@ class DiagnosticsActivity : AppCompatActivity() {
     private lateinit var baseUrlField: EditText
     private lateinit var modelField: EditText
     private lateinit var apiKeyField: EditText
+    private lateinit var askField: EditText
     private lateinit var permissionButton: Button
     private val sandbox by lazy { TermuxSandbox(applicationContext) }
     private val worker = Executors.newSingleThreadExecutor()
@@ -213,6 +216,30 @@ class DiagnosticsActivity : AppCompatActivity() {
             Button(this).apply {
                 text = "Test the model"
                 setOnClickListener { testModel() }
+            },
+        )
+
+        root.addView(heading("Ask the agent"))
+        root.addView(
+            body(
+                "The whole thing joined up: the model proposes, the policy " +
+                    "decides, and the tools run here. Try \"what is my battery " +
+                    "level?\" or \"use python to work out the 200th Fibonacci " +
+                    "number\".",
+            ),
+        )
+        askField = field("Ask something", "")
+        root.addView(askField)
+        root.addView(
+            Button(this).apply {
+                text = "Send"
+                setOnClickListener { ask() }
+            },
+        )
+        root.addView(
+            Button(this).apply {
+                text = "New conversation"
+                setOnClickListener { resetConversation() }
             },
         )
 
@@ -556,6 +583,84 @@ class DiagnosticsActivity : AppCompatActivity() {
                     onSuccess = { it },
                     onFailure = { "failed: " + it.message.orEmpty() },
                 )
+            }
+        }
+    }
+
+    private fun ask() {
+        val question = askField.text.toString().trim()
+        if (question.isEmpty()) {
+            outputView.text = "[agent] type a question first."
+            return
+        }
+        outputView.text = "Thinking…"
+        worker.execute {
+            val configured = AgentHost.configure(this)
+            if (configured.isFailure) {
+                runOnUiThread {
+                    outputView.text = "[agent] " + configured.exceptionOrNull()?.message.orEmpty()
+                }
+                return@execute
+            }
+            val reply = try {
+                AgentHost.ask(this, question)
+            } catch (failure: Exception) {
+                """{"status":"failed","text":"${failure.message.orEmpty().take(300)}"}"""
+            }
+            runOnUiThread { outputView.text = renderAnswer(reply, configured.getOrDefault(listOf())) }
+        }
+    }
+
+    /**
+     * Shows the decision, not just the sentence.
+     *
+     * The point of the architecture is that an answer carries how it
+     * was arrived at: which tools ran, what is waiting on approval, and
+     * whether the run has read anything a stranger wrote.
+     */
+    private fun renderAnswer(json: String, tools: List<String>): String = buildString {
+        val parsed = runCatching { JSONObject(json) }.getOrNull()
+            ?: return "[agent] unreadable reply:\n$json"
+        append("[agent] status: ").append(parsed.optString("status")).append('\n')
+        append("tools available: ").append(tools.joinToString(", ")).append("\n\n")
+        append(parsed.optString("text").ifBlank { "(no text)" }).append('\n')
+
+        val used = parsed.optJSONArray("tools_used")
+        if (used != null && used.length() > 0) {
+            append("\nwhat ran:\n")
+            for (index in 0 until used.length()) {
+                val item = used.getJSONObject(index)
+                append("  ").append(item.optString("status")).append(" - ")
+                append(item.optString("summary").take(300)).append('\n')
+            }
+        }
+        val waiting = parsed.optJSONArray("pending_approvals")
+        if (waiting != null && waiting.length() > 0) {
+            append("\nwaiting for you to approve:\n")
+            for (index in 0 until waiting.length()) {
+                val item = waiting.getJSONObject(index)
+                append("  ").append(item.optString("tool")).append(" - ")
+                append(item.optString("reason")).append('\n')
+            }
+        }
+        if (parsed.optBoolean("tainted")) {
+            append("\nthis run read content written by someone else, so further ")
+            append("access to private data will ask first.\n")
+        }
+        parsed.optString("error").takeIf { it.isNotBlank() }?.let {
+            append("\nerror: ").append(it).append('\n')
+        }
+    }
+
+    private fun resetConversation() {
+        worker.execute {
+            val had = runCatching { AgentHost.reset(this) }.getOrDefault(false)
+            runOnUiThread {
+                outputView.text = if (had) {
+                    "[agent] started a new conversation; the old context is gone."
+                } else {
+                    "[agent] there was no conversation to clear."
+                }
             }
         }
     }

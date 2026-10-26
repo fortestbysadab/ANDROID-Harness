@@ -335,6 +335,61 @@ at 3 a.m. is a feature that does not work.
 - [x] Provider section in diagnostics: URL, model, key, fetch, test
 - [x] `INTERNET` permission — its absence looks exactly like a network fault
 - [x] 24 provider tests, no network touched
+- [x] Confirmed on the owner's device — list fetched, real completion returned
+
+**2f — assemble the agent, and let Kotlin own the tools.**
+
+Everything up to here is a part. This is the turn of the key: one
+`Agent` object holds the registry, the approvals, the sessions and the
+audit log, and builds two runtimes over one planner — an attended one
+that can pause for approval, and an unattended one that denies instead,
+because a scheduled run at 3 a.m. has nobody to ask.
+
+**The seam is one method and two JSON strings.** A Kotlin tool
+implements `run(payloadJson): String`; `register_native_tool` wraps it
+as a `ToolSpec`. Nothing else crosses: no Python objects into Kotlin, no
+Android types into the core. That is what keeps the core testable on a
+laptop with no device, which was most of the reason for putting it in
+Python at all.
+
+**Risk is declared once, at registration.** It travels as a string, is
+converted to the `Risk` enum there, and lives in the `ToolSpec` from
+then on. A handler cannot revise it at call time — by then the policy
+has already decided. An unknown risk name raises at registration rather
+than being quietly read as something permissive.
+
+**The far side is treated as hostile to its own process.** Not because
+Kotlin is untrusted, but because a bug there must not look like a tool
+result for the model to reason about. A thrown Java exception, an empty
+return, a stack trace where JSON was expected, a JSON array, data that
+is not an object: each becomes a named error — `native_tool_failed`,
+`native_tool_empty`, `native_tool_malformed`.
+
+**Two first tools, chosen to prove opposite things.**
+`get_battery_status` is read-only and needs no approval; it is the
+proof that a native Android API can answer a question the model would
+otherwise invent, and it is the first capability Termux:API used to
+supply. `run_python` is the one the architecture was arranged around:
+the model writes the code, so it runs in Termux, under proot, as a
+different Android user. Recorded rather than glossed — **the sandbox has
+network access**. proot hides the filesystem, not the interface, so this
+contains the owner's files, not exfiltration.
+
+The answer shown on the device is the decision, not just the sentence:
+which tools ran, what is waiting on approval, and whether the run has
+read anything a stranger wrote.
+
+- [x] `bridge.py` — the registration seam; risk cannot be talked down
+- [x] `app.py` — the composition root; stores under the app's own directory
+- [x] `NativeTool` interface, `BatteryTool`, `SandboxTool`
+- [x] `AgentHost` — the only file that knows about both sides
+- [x] "Ask the agent" in diagnostics, with tools, pauses and taint shown
+- [x] History saved even when a run fails or pauses — losing the owner's
+      question to a denied tool would be its own bug
+- [x] `NativeToolContractTest` reads the `Risk` enum out of the Python
+      source, so a typo in a Kotlin risk string fails in CI, not on the
+      phone
+- [x] 145 core tests; 15 mutants, 15 killed
 - [ ] Confirmed on the owner's device
 
 **Why the approval store was rewritten.** The predecessor kept approvals
