@@ -322,7 +322,7 @@ class DiagnosticsActivity : AppCompatActivity() {
             if (outcome.stderr.isNotEmpty()) append("stderr:\n${outcome.stderr}\n")
             if (outcome.outputs.isNotEmpty()) {
                 outcome.outputs.forEach { (name, bytes) ->
-                    append("file: ${'$'}name (${'$'}{bytes.size} bytes)\n")
+                    append("file: $name (${bytes.size} bytes)\n")
                     append(bytes.decodeToString().prependIndent("  "))
                     append("\n")
                 }
